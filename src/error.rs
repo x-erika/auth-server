@@ -23,7 +23,7 @@ pub enum AppError {
     Conflict(String),
 
     #[error("too many requests")]
-    RateLimited,
+    RateLimited { retry_after_seconds: u64 },
 
     #[error("oauth error: {error}: {description}")]
     OAuth {
@@ -63,7 +63,7 @@ impl ResponseError for AppError {
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
-            AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::OAuth { status, .. } => *status,
             AppError::Db(_) | AppError::Redis(_) | AppError::RedisPool(_) | AppError::Other(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -81,6 +81,12 @@ impl ResponseError for AppError {
             AppError::BadRequest(msg) | AppError::Conflict(msg) => {
                 HttpResponse::build(status).json(json!({ "error": msg }))
             }
+            AppError::RateLimited { retry_after_seconds } => HttpResponse::build(status)
+                .insert_header(("Retry-After", retry_after_seconds.to_string()))
+                .json(json!({
+                    "error": "rate_limit_exceeded",
+                    "retry_after_seconds": retry_after_seconds,
+                })),
             _ => HttpResponse::build(status).json(json!({ "error": self.to_string() })),
         }
     }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::client::ClientRepository;
 use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
+use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
 use crate::db::Db;
 use crate::redis_pool::RedisPool;
@@ -32,6 +33,9 @@ pub struct AppState {
     pub clients: ClientRepository,
     pub sessions: SessionRepository,
     pub session_service: SessionService,
+
+    // Rate limiting (Phase 4)
+    pub rate_limiter: RateLimiter,
 }
 
 pub type SharedState = Arc<AppState>;

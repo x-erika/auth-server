@@ -32,6 +32,7 @@ use tracing_subscriber::EnvFilter;
 use crate::client::ClientRepository;
 use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
+use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
 use crate::role::RoleRepository;
 use crate::session::{SessionRepository, SessionService};
@@ -103,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
     let clients = ClientRepository::new(db.clone(), redis.clone(), cfg.redis_ttl.client_cache);
     let sessions = SessionRepository::new(db.clone(), redis.clone());
     let session_service = SessionService::new(sessions.clone());
+    let rate_limiter = RateLimiter::new(redis.clone());
 
     let state: SharedState = Arc::new(AppState {
         config: cfg.clone(),
@@ -117,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         clients,
         sessions,
         session_service,
+        rate_limiter,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
