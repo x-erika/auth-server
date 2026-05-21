@@ -10,6 +10,8 @@
 //!
 //! Subsequent phases plug in crypto, repositories, OAuth/OIDC, admin, etc.
 
+mod admin;
+mod bootstrap;
 mod client;
 mod common;
 mod config;
@@ -190,6 +192,23 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.issuer_url.clone(),
     );
 
+    // Phase 8 — startup seeders (role + admin + client bootstraps + KPJTIK).
+    // Run sequentially: `RoleBootstrap` must finish before `AdminBootstrap`
+    // tries to assign the `admin` role. Each acquires `pg_advisory_xact_lock`
+    // independently so multi-replica deploys converge cleanly.
+    bootstrap::ensure_core_roles(&db, &roles, cfg.bootstrap.kpjtik_enabled).await?;
+    bootstrap::ensure_admin_user(&db, &users, &credentials, &roles).await?;
+    bootstrap::ensure_bootstrap_clients(&db, &clients, cfg.bootstrap.kpjtik_enabled).await?;
+    bootstrap::ensure_kpjtik_seed(
+        &db,
+        &users,
+        &credentials,
+        &roles,
+        cfg.bootstrap.kpjtik_enabled,
+    )
+    .await?;
+    tracing::info!("bootstrap routines completed");
+
     // Spawn refresh-token cleanup loop.
     let _cleanup_handle = start_refresh_token_cleanup(db.clone());
 
@@ -280,6 +299,7 @@ async fn main() -> anyhow::Result<()> {
             .configure(oauth::resource::configure)
             .configure(oauth::consent::resource::configure)
             .configure(oidc::resource::configure)
+            .configure(admin::resource::configure)
     })
     .bind(bind)?
     .run()
