@@ -10,6 +10,7 @@
 //!
 //! Subsequent phases plug in crypto, repositories, OAuth/OIDC, admin, etc.
 
+mod common;
 mod config;
 mod db;
 mod error;
@@ -24,6 +25,8 @@ use actix_web_prom::PrometheusMetricsBuilder;
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 
+use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
+use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::config::Config;
 use crate::state::{AppState, SharedState};
 
@@ -70,10 +73,28 @@ async fn main() -> anyhow::Result<()> {
     let db = db::init(&cfg.db).await?;
     let redis = redis_pool::init(&cfg.redis)?;
 
+    // RSA key set + JWT signer/validator. Keys land on disk at
+    // `$HOME/.xerika/auth/keys/` (or `AUTH_JWT_KEYS_DIR` if set) and survive
+    // restarts — matches Quarkus' RsaKeyProvider behavior.
+    let rsa_keys = Arc::new(RsaKeyProvider::init(cfg.keys_dir.as_deref())?);
+    let jwt_signer = Arc::new(JwtSigner::new(
+        rsa_keys.clone(),
+        cfg.server.issuer_url.clone(),
+        cfg.jwt.access_token_ttl,
+        cfg.jwt.id_token_ttl,
+    ));
+    let jwt_validator = Arc::new(JwtValidator::new(
+        rsa_keys.clone(),
+        cfg.server.issuer_url.clone(),
+    ));
+
     let state: SharedState = Arc::new(AppState {
         config: cfg.clone(),
         db,
         redis,
+        rsa_keys,
+        jwt_signer,
+        jwt_validator,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
