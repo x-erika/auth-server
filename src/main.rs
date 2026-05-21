@@ -15,9 +15,12 @@ mod common;
 mod config;
 mod db;
 mod error;
+mod login;
+mod password;
 mod redis_pool;
 mod role;
 mod session;
+mod signup;
 mod state;
 mod user;
 
@@ -34,8 +37,11 @@ use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
+use crate::login::LoginService;
+use crate::password::{PasswordFlow, PasswordResetRepository};
 use crate::role::RoleRepository;
 use crate::session::{SessionRepository, SessionService};
+use crate::signup::{EmailVerificationRepository, SignupFlow};
 use crate::state::{AppState, SharedState};
 use crate::user::{CredentialRepository, UserRepository};
 
@@ -106,6 +112,22 @@ async fn main() -> anyhow::Result<()> {
     let session_service = SessionService::new(sessions.clone());
     let rate_limiter = RateLimiter::new(redis.clone());
 
+    // Phase 5 — auth flow services.
+    let login_service = LoginService::new(users.clone(), credentials.clone());
+    let email_verifications = EmailVerificationRepository::new(db.clone());
+    let signup_flow = SignupFlow::new(
+        db.clone(),
+        roles.clone(),
+        email_verifications.clone(),
+    );
+    let password_resets = PasswordResetRepository::new(db.clone());
+    let password_flow = PasswordFlow::new(
+        users.clone(),
+        credentials.clone(),
+        password_resets.clone(),
+        sessions.clone(),
+    );
+
     let state: SharedState = Arc::new(AppState {
         config: cfg.clone(),
         db,
@@ -120,6 +142,11 @@ async fn main() -> anyhow::Result<()> {
         sessions,
         session_service,
         rate_limiter,
+        login_service,
+        signup_flow,
+        email_verifications,
+        password_flow,
+        password_resets,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
@@ -167,6 +194,10 @@ async fn main() -> anyhow::Result<()> {
             .service(health)
             .service(health_live)
             .service(health_ready)
+            .configure(login::resource::configure)
+            .configure(login::page::configure)
+            .configure(signup::resource::configure)
+            .configure(password::resource::configure)
     })
     .bind(bind)?
     .run()

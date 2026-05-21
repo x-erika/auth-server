@@ -5,6 +5,6 @@ pub mod model;
 pub mod repository;
 pub mod service;
 
-pub use model::{SessionSnapshot, UserSession};
+pub use model::{SessionSnapshot, SessionWithUser, UserSession};
 pub use repository::{SessionRepository, SessionRepositoryError};
-pub use service::SessionService;
+pub use service::{SESSION_TTL_HOURS, SessionService};

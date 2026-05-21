@@ -3,3 +3,4 @@
 pub mod crypto;
 pub mod ratelimit;
 pub mod redis;
+pub mod web;

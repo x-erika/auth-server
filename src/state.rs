@@ -10,6 +10,7 @@ use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
 use crate::db::Db;
+use crate::login::LoginService;
 use crate::redis_pool::RedisPool;
 use crate::role::RoleRepository;
 use crate::session::{SessionRepository, SessionService};
@@ -36,6 +37,13 @@ pub struct AppState {
 
     // Rate limiting (Phase 4)
     pub rate_limiter: RateLimiter,
+
+    // Auth flows (Phase 5)
+    pub login_service: LoginService,
+    pub signup_flow: crate::signup::SignupFlow,
+    pub email_verifications: crate::signup::EmailVerificationRepository,
+    pub password_flow: crate::password::PasswordFlow,
+    pub password_resets: crate::password::PasswordResetRepository,
 }
 
 pub type SharedState = Arc<AppState>;
