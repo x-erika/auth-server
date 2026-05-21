@@ -10,12 +10,16 @@
 //!
 //! Subsequent phases plug in crypto, repositories, OAuth/OIDC, admin, etc.
 
+mod client;
 mod common;
 mod config;
 mod db;
 mod error;
 mod redis_pool;
+mod role;
+mod session;
 mod state;
+mod user;
 
 use std::sync::Arc;
 
@@ -25,10 +29,14 @@ use actix_web_prom::PrometheusMetricsBuilder;
 use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 
+use crate::client::ClientRepository;
 use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::config::Config;
+use crate::role::RoleRepository;
+use crate::session::{SessionRepository, SessionService};
 use crate::state::{AppState, SharedState};
+use crate::user::{CredentialRepository, UserRepository};
 
 #[get("/q/health")]
 async fn health() -> impl Responder {
@@ -88,6 +96,14 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.issuer_url.clone(),
     ));
 
+    // Repositories. Pool handles are Arc-backed, so cloning is cheap.
+    let users = UserRepository::new(db.clone());
+    let credentials = CredentialRepository::new(db.clone());
+    let roles = RoleRepository::new(db.clone());
+    let clients = ClientRepository::new(db.clone(), redis.clone(), cfg.redis_ttl.client_cache);
+    let sessions = SessionRepository::new(db.clone(), redis.clone());
+    let session_service = SessionService::new(sessions.clone());
+
     let state: SharedState = Arc::new(AppState {
         config: cfg.clone(),
         db,
@@ -95,6 +111,12 @@ async fn main() -> anyhow::Result<()> {
         rsa_keys,
         jwt_signer,
         jwt_validator,
+        users,
+        credentials,
+        roles,
+        clients,
+        sessions,
+        session_service,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
