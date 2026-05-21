@@ -44,6 +44,15 @@ pub struct AppState {
     pub email_verifications: crate::signup::EmailVerificationRepository,
     pub password_flow: crate::password::PasswordFlow,
     pub password_resets: crate::password::PasswordResetRepository,
+
+    // OAuth core (Phase 6)
+    pub authorize_flow: crate::oauth::authorize::AuthorizeFlow,
+    pub auth_codes: crate::oauth::authorize::AuthCodeStore,
+    pub token_flow: crate::oauth::token::TokenFlow,
+    pub token_issuer: crate::oauth::token::TokenIssuer,
+    pub refresh_tokens: crate::oauth::token::RefreshTokenRepository,
+    pub introspect_flow: crate::oauth::token::IntrospectFlow,
+    pub revoke_flow: crate::oauth::token::RevokeFlow,
 }
 
 pub type SharedState = Arc<AppState>;

@@ -16,6 +16,7 @@ mod config;
 mod db;
 mod error;
 mod login;
+mod oauth;
 mod password;
 mod redis_pool;
 mod role;
@@ -38,6 +39,11 @@ use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
 use crate::login::LoginService;
+use crate::oauth::authorize::{AuthCodeStore, AuthorizeFlow};
+use crate::oauth::token::{
+    IntrospectFlow, RefreshTokenRepository, RevokeFlow, TokenFlow, TokenIssuer,
+    start_refresh_token_cleanup,
+};
 use crate::password::{PasswordFlow, PasswordResetRepository};
 use crate::role::RoleRepository;
 use crate::session::{SessionRepository, SessionService};
@@ -128,6 +134,34 @@ async fn main() -> anyhow::Result<()> {
         sessions.clone(),
     );
 
+    // Phase 6 — OAuth core.
+    let auth_codes = AuthCodeStore::new(redis.clone());
+    let refresh_tokens = RefreshTokenRepository::new(db.clone());
+    let token_issuer = TokenIssuer::new(
+        jwt_signer.clone(),
+        roles.clone(),
+        refresh_tokens.clone(),
+    );
+    let token_flow = TokenFlow::new(
+        db.clone(),
+        clients.clone(),
+        users.clone(),
+        sessions.clone(),
+        auth_codes.clone(),
+        refresh_tokens.clone(),
+        token_issuer.clone(),
+    );
+    let authorize_flow = AuthorizeFlow::new(
+        clients.clone(),
+        session_service.clone(),
+        auth_codes.clone(),
+    );
+    let introspect_flow = IntrospectFlow::new(clients.clone(), jwt_validator.clone());
+    let revoke_flow = RevokeFlow::new(clients.clone(), refresh_tokens.clone());
+
+    // Spawn refresh-token cleanup loop.
+    let _cleanup_handle = start_refresh_token_cleanup(db.clone());
+
     let state: SharedState = Arc::new(AppState {
         config: cfg.clone(),
         db,
@@ -147,6 +181,13 @@ async fn main() -> anyhow::Result<()> {
         email_verifications,
         password_flow,
         password_resets,
+        authorize_flow,
+        auth_codes,
+        token_flow,
+        token_issuer,
+        refresh_tokens,
+        introspect_flow,
+        revoke_flow,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
@@ -198,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
             .configure(login::page::configure)
             .configure(signup::resource::configure)
             .configure(password::resource::configure)
+            .configure(oauth::resource::configure)
     })
     .bind(bind)?
     .run()
