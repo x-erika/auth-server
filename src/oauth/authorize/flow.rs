@@ -1,9 +1,4 @@
 //! Port of `AuthorizeFlow.java`.
-//!
-//! Phase 6 note: consent (`ConsentService` + `PendingAuthorizationStore`)
-//! lands in Phase 7. For now `has_consent` is force-`true` so the
-//! authorize → token round-trip works end-to-end. Phase 7 will replace
-//! this with the real Postgres-backed consent check.
 
 use std::collections::HashSet;
 
@@ -13,6 +8,9 @@ use uuid::Uuid;
 
 use crate::client::ClientRepository;
 use crate::common::crypto::random_tokens;
+use crate::oauth::consent::{
+    ConsentService, PendingAuthorization, PendingAuthorizationStore,
+};
 use crate::oauth::pkce;
 use crate::oauth::scopes;
 use crate::session::SessionService;
@@ -23,6 +21,7 @@ use super::result::AuthorizeResult;
 
 const AUTH_CODE_TTL_MINUTES: i64 = 3;
 const AUTH_CODE_BYTES: usize = 48;
+const CONSENT_REQUEST_TTL_MINUTES: i64 = 10;
 /// After re-auth via /login, treat `prompt=login` as already-satisfied for
 /// this long. Without the grace, every redirect-back from `/login` would
 /// re-trigger the prompt and loop.
@@ -33,6 +32,8 @@ pub struct AuthorizeFlow {
     clients: ClientRepository,
     session_service: SessionService,
     auth_codes: AuthCodeStore,
+    consent_service: ConsentService,
+    pending_store: PendingAuthorizationStore,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -57,11 +58,15 @@ impl AuthorizeFlow {
         clients: ClientRepository,
         session_service: SessionService,
         auth_codes: AuthCodeStore,
+        consent_service: ConsentService,
+        pending_store: PendingAuthorizationStore,
     ) -> Self {
         Self {
             clients,
             session_service,
             auth_codes,
+            consent_service,
+            pending_store,
         }
     }
 
@@ -85,7 +90,7 @@ impl AuthorizeFlow {
         let prompts = parse_prompt(req.prompt);
         let prompt_none = prompts.contains("none");
         let prompt_login = prompts.contains("login");
-        let _prompt_consent = prompts.contains("consent"); // honoured once consent lands
+        let prompt_consent = prompts.contains("consent");
 
         let session = match req.session_token {
             Some(t) => self.session_service.find_active_session(t).await?,
@@ -213,16 +218,41 @@ impl AuthorizeFlow {
             ));
         }
 
-        // TODO(phase-7): real consent check via ConsentService +
-        // PendingAuthorizationStore. For now we auto-grant so the e2e
-        // authorize → token flow works.
-        let has_consent = true;
+        let has_consent = !prompt_consent
+            && self
+                .consent_service
+                .has_consent(session.session.user_id, client.id, scope.as_deref())
+                .await?;
         if !has_consent {
-            // Place-holder: phase 7 will return consent_required + redirect
-            // to /consent?req=<id>.
-            return Ok(AuthorizeResult::consent_required(
-                random_tokens::url_safe(24),
-            ));
+            if prompt_none {
+                return Ok(error_redirect(
+                    &redirect_uri,
+                    state.as_deref(),
+                    "consent_required",
+                    "Consent is required but prompt=none was specified",
+                ));
+            }
+            let request_id = random_tokens::url_safe(24);
+            let pending = PendingAuthorization {
+                request_id: request_id.clone(),
+                session_id: session.session.id,
+                user_id: session.session.user_id,
+                client_id: client.client_id.clone(),
+                redirect_uri: redirect_uri.clone(),
+                response_type: "code".to_string(),
+                scope: scope.clone(),
+                state: state.clone(),
+                nonce: nonce.clone(),
+                prompt: req.prompt.map(|s| s.to_string()),
+                max_age: req.max_age,
+                code_challenge: code_challenge.clone(),
+                code_challenge_method: resolved_method.clone(),
+                claims_requested: claims_json.clone(),
+                expires_at: Utc::now().naive_utc()
+                    + ChronoDuration::minutes(CONSENT_REQUEST_TTL_MINUTES),
+            };
+            self.pending_store.put(&pending).await?;
+            return Ok(AuthorizeResult::consent_required(request_id));
         }
 
         Ok(self
@@ -239,6 +269,53 @@ impl AuthorizeFlow {
                 claims_json.as_deref(),
             )
             .await?)
+    }
+
+    /// Called from `POST /consent allow`. Re-validates the client + redirect
+    /// (in case admin disabled the client while the user was on the consent
+    /// screen), persists the grant, then mints the code.
+    pub async fn complete_after_consent(
+        &self,
+        pending: &PendingAuthorization,
+    ) -> anyhow::Result<AuthorizeResult> {
+        let Some(client) = self.clients.find_by_client_id(&pending.client_id).await? else {
+            return Ok(AuthorizeResult::error(
+                "unauthorized_client",
+                "Unknown or disabled client",
+            ));
+        };
+        if !client.enabled {
+            return Ok(AuthorizeResult::error(
+                "unauthorized_client",
+                "Unknown or disabled client",
+            ));
+        }
+        if !self
+            .clients
+            .is_redirect_uri_allowed(client.id, &pending.redirect_uri)
+            .await?
+        {
+            return Ok(AuthorizeResult::error(
+                "invalid_request",
+                "redirect_uri is not registered",
+            ));
+        }
+        self.consent_service
+            .grant(pending.user_id, client.id, pending.scope.as_deref())
+            .await?;
+        self.issue_code(
+            pending.session_id,
+            pending.user_id,
+            &client.client_id,
+            &pending.redirect_uri,
+            pending.scope.as_deref(),
+            pending.state.as_deref(),
+            pending.nonce.as_deref(),
+            pending.code_challenge.as_deref(),
+            pending.code_challenge_method.as_deref(),
+            pending.claims_requested.as_deref(),
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]

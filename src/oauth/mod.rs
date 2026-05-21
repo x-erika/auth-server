@@ -1,10 +1,9 @@
 //! Port of `com.xerika.auth.oauth.*` — RFC 6749 / OIDC core.
-//!
-//! Phase 6 wires up: `/oauth/authorize`, `/oauth/token`, `/oauth/introspect`,
-//! `/oauth/revoke`. Consent / device / logout / OIDC discovery land in
-//! Phase 7.
 
 pub mod authorize;
+pub mod consent;
+pub mod device;
+pub mod logout;
 pub mod pkce;
 pub mod resource;
 pub mod scopes;

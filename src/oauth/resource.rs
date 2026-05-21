@@ -1,12 +1,15 @@
-//! Port of `OAuthResource.java`. Phase 6 wires `/oauth/authorize`,
-//! `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`. Logout + device
-//! land in Phase 7.
+//! Port of `OAuthResource.java`.
+
+use std::time::Duration;
 
 use actix_web::http::header;
 use actix_web::{HttpRequest, HttpResponse, web};
+use askama::Template;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::common::ratelimit::RateLimiter;
+use crate::common::redis::keys;
 use crate::common::web::bearer;
 use crate::error::{AppError, AppResult};
 use crate::oauth::authorize::flow::AuthorizeRequest;
@@ -18,7 +21,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/authorize", web::get().to(authorize))
             .route("/token", web::post().to(token))
             .route("/revoke", web::post().to(revoke))
-            .route("/introspect", web::post().to(introspect)),
+            .route("/introspect", web::post().to(introspect))
+            .route("/logout", web::get().to(logout))
+            .route("/device-authorization", web::post().to(device_authorization))
+            .route("/device/verify", web::post().to(device_verify)),
     );
 }
 
@@ -210,6 +216,159 @@ async fn introspect(
         ));
     }
     Ok(HttpResponse::Ok().json(result.payload.unwrap()))
+}
+
+#[derive(Debug, Deserialize)]
+struct LogoutQuery {
+    id_token_hint: Option<String>,
+    post_logout_redirect_uri: Option<String>,
+    state: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "logout.html")]
+struct LogoutPage {
+    frontchannel_uris: Vec<String>,
+    final_redirect: Option<String>,
+}
+
+async fn logout(
+    state: web::Data<SharedState>,
+    req: HttpRequest,
+    query: web::Query<LogoutQuery>,
+) -> AppResult<HttpResponse> {
+    let session_token = bearer::extract(&req);
+    let result = state
+        .logout_flow
+        .logout(
+            query.id_token_hint.as_deref(),
+            session_token.as_deref(),
+            query.post_logout_redirect_uri.as_deref(),
+        )
+        .await
+        .map_err(AppError::Other)?;
+
+    let mut final_redirect = result.validated_post_logout_redirect_uri.clone();
+    if let (Some(redir), Some(state_param)) = (&mut final_redirect, &query.state) {
+        if !state_param.is_empty() {
+            let sep = if redir.contains('?') { '&' } else { '?' };
+            redir.push_str(sep.to_string().as_str());
+            redir.push_str("state=");
+            redir.push_str(&urlencoding::encode(state_param));
+        }
+    }
+
+    if !result.frontchannel_logout_uris.is_empty() {
+        let page = LogoutPage {
+            frontchannel_uris: result.frontchannel_logout_uris,
+            final_redirect,
+        };
+        let body = page
+            .render()
+            .map_err(|e| AppError::Other(anyhow::anyhow!("askama: {e}")))?;
+        return Ok(HttpResponse::Ok()
+            .content_type(header::ContentType::html())
+            .body(body));
+    }
+    if let Some(redir) = final_redirect {
+        return Ok(HttpResponse::SeeOther()
+            .insert_header((header::LOCATION, redir))
+            .finish());
+    }
+    Ok(HttpResponse::Ok().json(json!({
+        "message": if result.terminated { "logged out" } else { "no active session" }
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceAuthForm {
+    client_id: Option<String>,
+    scope: Option<String>,
+}
+
+async fn device_authorization(
+    state: web::Data<SharedState>,
+    form: web::Form<DeviceAuthForm>,
+) -> AppResult<HttpResponse> {
+    let client_id_owned = form.client_id.clone().unwrap_or_default();
+    if !client_id_owned.is_empty() {
+        let key = keys::rl_device_auth(client_id_owned.trim());
+        apply_limit(
+            &state.rate_limiter,
+            &key,
+            state.config.ratelimit.device_auth_client_max,
+            state.config.ratelimit.device_auth_client_window,
+        )
+        .await?;
+    }
+    let result = state
+        .device_flow
+        .request_device_authorization(&client_id_owned, form.scope.as_deref())
+        .await
+        .map_err(AppError::Other)?;
+    if !result.ok {
+        return Ok(HttpResponse::BadRequest().json(json!({
+            "error": result.error.unwrap_or_else(|| "invalid_request".to_string()),
+            "error_description": result.error_description.unwrap_or_default(),
+        })));
+    }
+    Ok(HttpResponse::Ok().json(result.payload.unwrap()))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceVerifyForm {
+    user_code: Option<String>,
+    action: Option<String>,
+}
+
+async fn device_verify(
+    state: web::Data<SharedState>,
+    req: HttpRequest,
+    form: web::Form<DeviceVerifyForm>,
+) -> AppResult<HttpResponse> {
+    let session_token = bearer::extract(&req);
+    let approve = !form
+        .action
+        .as_deref()
+        .is_some_and(|s| s.eq_ignore_ascii_case("deny"));
+    let result = state
+        .device_flow
+        .verify_user_code(
+            form.user_code.as_deref().unwrap_or(""),
+            session_token.as_deref(),
+            approve,
+        )
+        .await
+        .map_err(AppError::Other)?;
+    if !result.ok {
+        let status = if result.error.as_deref() == Some("invalid_session") {
+            actix_web::http::StatusCode::UNAUTHORIZED
+        } else {
+            actix_web::http::StatusCode::BAD_REQUEST
+        };
+        return Ok(HttpResponse::build(status).json(json!({
+            "error": result.error.unwrap_or_else(|| "invalid_request".to_string()),
+            "error_description": result.error_description.unwrap_or_default(),
+        })));
+    }
+    Ok(HttpResponse::Ok().json(json!({
+        "message": if approve { "device authorized" } else { "device denied" }
+    })))
+}
+
+async fn apply_limit(
+    limiter: &RateLimiter,
+    key: &str,
+    max: u32,
+    window: Duration,
+) -> AppResult<()> {
+    let d = limiter.check(key, max, window).await;
+    if !d.allowed {
+        return Err(AppError::RateLimited {
+            retry_after_seconds: d.retry_after_seconds,
+        });
+    }
+    Ok(())
 }
 
 /// RFC 6749 §5.2: `invalid_client` → 401, everything else → 400. Centralised

@@ -1,8 +1,4 @@
 //! Port of `TokenFlow.java`.
-//!
-//! Phase 6 note: device_code grant is wired but returns
-//! `unsupported_grant_type` until Phase 7 ports `DeviceAuthorizationRepository`.
-//! `authorization_code`, `refresh_token`, `client_credentials` are complete.
 
 use chrono::Utc;
 
@@ -10,6 +6,10 @@ use crate::client::{Client, ClientRepository, ClientSecretHasher};
 use crate::common::crypto::sha256;
 use crate::db::Db;
 use crate::oauth::authorize::AuthCodeStore;
+use crate::oauth::device::{
+    DeviceAuthorizationRepository,
+    model::{STATUS_APPROVED, STATUS_CONSUMED, STATUS_DENIED, STATUS_PENDING},
+};
 use crate::oauth::pkce;
 use crate::oauth::scopes;
 use crate::session::SessionRepository;
@@ -28,6 +28,7 @@ pub struct TokenFlow {
     auth_codes: AuthCodeStore,
     refresh_tokens: RefreshTokenRepository,
     issuer: TokenIssuer,
+    device_repo: DeviceAuthorizationRepository,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -53,6 +54,7 @@ impl TokenFlow {
         auth_codes: AuthCodeStore,
         refresh_tokens: RefreshTokenRepository,
         issuer: TokenIssuer,
+        device_repo: DeviceAuthorizationRepository,
     ) -> Self {
         Self {
             db,
@@ -62,6 +64,7 @@ impl TokenFlow {
             auth_codes,
             refresh_tokens,
             issuer,
+            device_repo,
         }
     }
 
@@ -70,18 +73,120 @@ impl TokenFlow {
             "authorization_code" => self.from_authorization_code(&req).await,
             "refresh_token" => self.from_refresh_token(&req).await,
             "client_credentials" => self.from_client_credentials(&req).await,
-            "urn:ietf:params:oauth:grant-type:device_code" => {
-                // Phase 7.
-                Ok(TokenResult::error(
-                    "unsupported_grant_type",
-                    "device_code grant lands in phase 7",
-                ))
-            }
+            "urn:ietf:params:oauth:grant-type:device_code" => self.from_device_code(&req).await,
             _ => Ok(TokenResult::error(
                 "unsupported_grant_type",
                 "Supported: authorization_code, refresh_token, client_credentials, device_code",
             )),
         }
+    }
+
+    async fn from_device_code(&self, req: &TokenRequest<'_>) -> anyhow::Result<TokenResult> {
+        let device_code = req.device_code.unwrap_or("");
+        let client_id = req.client_id.unwrap_or("");
+        if device_code.is_empty() || client_id.is_empty() {
+            return Ok(TokenResult::error(
+                "invalid_request",
+                "device_code and client_id are required",
+            ));
+        }
+        let Some(client) = self.clients.find_by_client_id(client_id).await? else {
+            return Ok(TokenResult::error(
+                "unauthorized_client",
+                "Unknown or disabled client",
+            ));
+        };
+        if !client.enabled {
+            return Ok(TokenResult::error(
+                "unauthorized_client",
+                "Unknown or disabled client",
+            ));
+        }
+        if !authenticate_client(&client, req.client_secret) {
+            return Ok(TokenResult::error(
+                "invalid_client",
+                "Invalid client credentials",
+            ));
+        }
+
+        let mut auth = match self.device_repo.find_by_device_code(device_code).await? {
+            Some(a) => a,
+            None => return Ok(TokenResult::error("invalid_grant", "Unknown device_code")),
+        };
+        if auth.client_id != client_id {
+            return Ok(TokenResult::error(
+                "invalid_grant",
+                "device_code does not belong to this client",
+            ));
+        }
+        if auth.expires_at < Utc::now().naive_utc() {
+            return Ok(TokenResult::error("expired_token", "device_code expired"));
+        }
+        match auth.status.as_str() {
+            s if s == STATUS_PENDING => {
+                return Ok(TokenResult::error(
+                    "authorization_pending",
+                    "User has not yet approved",
+                ));
+            }
+            s if s == STATUS_DENIED => {
+                return Ok(TokenResult::error(
+                    "access_denied",
+                    "User denied the authorization request",
+                ));
+            }
+            s if s == STATUS_CONSUMED => {
+                return Ok(TokenResult::error(
+                    "invalid_grant",
+                    "device_code already used",
+                ));
+            }
+            s if s == STATUS_APPROVED => { /* fallthrough */ }
+            _ => {
+                return Ok(TokenResult::error(
+                    "invalid_grant",
+                    "Unknown device_code state",
+                ));
+            }
+        }
+
+        let Some(user_id) = auth.user_id else {
+            return Ok(TokenResult::error(
+                "invalid_grant",
+                "Approved device_code missing user binding",
+            ));
+        };
+        let Some(session_id) = auth.session_id else {
+            return Ok(TokenResult::error(
+                "invalid_grant",
+                "Approved device_code missing user binding",
+            ));
+        };
+
+        let user = self.users.find_by_id(user_id).await?;
+        let session = self.sessions.find_by_id(session_id).await?;
+        let (Some(user), Some(session)) = (user, session) else {
+            return Ok(TokenResult::error("invalid_grant", "User/session not found"));
+        };
+
+        auth.status = STATUS_CONSUMED.to_string();
+        self.device_repo.update(&auth).await?;
+
+        let mut tx = self.db.begin().await?;
+        let payload = self
+            .issuer
+            .issue(
+                &mut tx,
+                &user,
+                &client,
+                &session,
+                auth.scope.as_deref(),
+                None,
+                None,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(TokenResult::success(payload))
     }
 
     async fn from_client_credentials(

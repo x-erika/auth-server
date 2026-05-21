@@ -17,6 +17,7 @@ mod db;
 mod error;
 mod login;
 mod oauth;
+mod oidc;
 mod password;
 mod redis_pool;
 mod role;
@@ -40,6 +41,11 @@ use crate::common::ratelimit::RateLimiter;
 use crate::config::Config;
 use crate::login::LoginService;
 use crate::oauth::authorize::{AuthCodeStore, AuthorizeFlow};
+use crate::oauth::consent::{
+    ConsentService, PendingAuthorizationStore, UserConsentRepository,
+};
+use crate::oauth::device::{DeviceAuthorizationRepository, DeviceFlow};
+use crate::oauth::logout::{BackchannelLogoutNotifier, LogoutFlow};
 use crate::oauth::token::{
     IntrospectFlow, RefreshTokenRepository, RevokeFlow, TokenFlow, TokenIssuer,
     start_refresh_token_cleanup,
@@ -134,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         sessions.clone(),
     );
 
-    // Phase 6 — OAuth core.
+    // Phase 6 + 7 — OAuth core + consent + device + logout.
     let auth_codes = AuthCodeStore::new(redis.clone());
     let refresh_tokens = RefreshTokenRepository::new(db.clone());
     let token_issuer = TokenIssuer::new(
@@ -142,6 +148,7 @@ async fn main() -> anyhow::Result<()> {
         roles.clone(),
         refresh_tokens.clone(),
     );
+    let device_repo = DeviceAuthorizationRepository::new(redis.clone());
     let token_flow = TokenFlow::new(
         db.clone(),
         clients.clone(),
@@ -150,14 +157,38 @@ async fn main() -> anyhow::Result<()> {
         auth_codes.clone(),
         refresh_tokens.clone(),
         token_issuer.clone(),
+        device_repo.clone(),
     );
+    let user_consents = UserConsentRepository::new(db.clone());
+    let consent_service = ConsentService::new(user_consents.clone());
+    let pending_authorizations =
+        PendingAuthorizationStore::new(redis.clone(), cfg.redis_ttl.pending_auth);
     let authorize_flow = AuthorizeFlow::new(
         clients.clone(),
         session_service.clone(),
         auth_codes.clone(),
+        consent_service.clone(),
+        pending_authorizations.clone(),
     );
     let introspect_flow = IntrospectFlow::new(clients.clone(), jwt_validator.clone());
     let revoke_flow = RevokeFlow::new(clients.clone(), refresh_tokens.clone());
+    let device_flow = DeviceFlow::new(
+        clients.clone(),
+        session_service.clone(),
+        device_repo.clone(),
+        cfg.server.issuer_url.clone(),
+    );
+    let backchannel_notifier = BackchannelLogoutNotifier::new(jwt_signer.clone());
+    let logout_flow = LogoutFlow::new(
+        db.clone(),
+        jwt_validator.clone(),
+        sessions.clone(),
+        session_service.clone(),
+        refresh_tokens.clone(),
+        clients.clone(),
+        backchannel_notifier.clone(),
+        cfg.server.issuer_url.clone(),
+    );
 
     // Spawn refresh-token cleanup loop.
     let _cleanup_handle = start_refresh_token_cleanup(db.clone());
@@ -188,6 +219,13 @@ async fn main() -> anyhow::Result<()> {
         refresh_tokens,
         introspect_flow,
         revoke_flow,
+        consent_service,
+        user_consents,
+        pending_authorizations,
+        device_flow,
+        device_repo,
+        logout_flow,
+        backchannel_notifier,
     });
 
     let bind = (cfg.server.host.clone(), cfg.server.port);
@@ -240,6 +278,8 @@ async fn main() -> anyhow::Result<()> {
             .configure(signup::resource::configure)
             .configure(password::resource::configure)
             .configure(oauth::resource::configure)
+            .configure(oauth::consent::resource::configure)
+            .configure(oidc::resource::configure)
     })
     .bind(bind)?
     .run()

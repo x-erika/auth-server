@@ -53,6 +53,15 @@ pub struct AppState {
     pub refresh_tokens: crate::oauth::token::RefreshTokenRepository,
     pub introspect_flow: crate::oauth::token::IntrospectFlow,
     pub revoke_flow: crate::oauth::token::RevokeFlow,
+
+    // Consent + device + logout (Phase 7)
+    pub consent_service: crate::oauth::consent::ConsentService,
+    pub user_consents: crate::oauth::consent::UserConsentRepository,
+    pub pending_authorizations: crate::oauth::consent::PendingAuthorizationStore,
+    pub device_flow: crate::oauth::device::DeviceFlow,
+    pub device_repo: crate::oauth::device::DeviceAuthorizationRepository,
+    pub logout_flow: crate::oauth::logout::LogoutFlow,
+    pub backchannel_notifier: crate::oauth::logout::BackchannelLogoutNotifier,
 }
 
 pub type SharedState = Arc<AppState>;
