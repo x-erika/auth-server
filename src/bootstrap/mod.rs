@@ -7,12 +7,10 @@
 //! before the HTTP server binds — same effect, simpler wiring.
 
 pub mod admin;
-pub mod kpjtik;
 pub mod lock;
 pub mod role;
 pub mod web_app_client;
 
 pub use admin::ensure_admin_user;
-pub use kpjtik::ensure_kpjtik_seed;
 pub use role::ensure_core_roles;
 pub use web_app_client::ensure_bootstrap_clients;

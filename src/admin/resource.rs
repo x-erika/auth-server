@@ -51,6 +51,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             )
             .route("/keys", web::get().to(list_keys))
             .route("/keys/rotate", web::post().to(rotate_key))
+            .route("/keys/{kid}", web::delete().to(retire_key))
             .route("/clients", web::get().to(list_clients))
             .route("/clients", web::post().to(create_client))
             .route("/clients/{id}", web::get().to(get_client))
@@ -467,16 +468,52 @@ async fn list_keys(state: web::Data<SharedState>, req: HttpRequest) -> AppResult
 }
 
 async fn rotate_key(state: web::Data<SharedState>, req: HttpRequest) -> AppResult<HttpResponse> {
-    if let Err(r) = require_admin(&state, &req).await {
-        return Ok(r);
-    }
+    let actor = match require_admin(&state, &req).await {
+        Ok(a) => a,
+        Err(r) => return Ok(r),
+    };
     let previous = state.rsa_keys.key_id();
     let new_kid = state.rsa_keys.rotate().map_err(AppError::Other)?;
+    // High-impact action: log who triggered it so post-incident forensics
+    // can answer "who rotated the signing key on date X?". require_admin
+    // already guarantees the actor exists and has the admin role.
+    tracing::info!(
+        actor = %actor.user_username,
+        actor_id = %actor.session.user_id,
+        previous_kid = %previous,
+        new_kid = %new_kid,
+        "RSA signing key rotated by admin"
+    );
     Ok(HttpResponse::Ok().json(json!({
         "message": "key rotated",
         "previous_kid": previous,
         "new_active_kid": new_kid,
     })))
+}
+
+async fn retire_key(
+    state: web::Data<SharedState>,
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> AppResult<HttpResponse> {
+    let actor = match require_admin(&state, &req).await {
+        Ok(a) => a,
+        Err(r) => return Ok(r),
+    };
+    let kid = path.into_inner();
+    match state.rsa_keys.retire(&kid) {
+        Ok(true) => {
+            tracing::info!(
+                actor = %actor.user_username,
+                actor_id = %actor.session.user_id,
+                %kid,
+                "RSA signing key retired by admin"
+            );
+            Ok(HttpResponse::NoContent().finish())
+        }
+        Ok(false) => Ok(HttpResponse::NotFound().json(json!({"message": "kid not found"}))),
+        Err(e) => Ok(HttpResponse::BadRequest().json(json!({"message": e.to_string()}))),
+    }
 }
 
 async fn list_clients(state: web::Data<SharedState>, req: HttpRequest) -> AppResult<HttpResponse> {
@@ -665,6 +702,25 @@ async fn add_redirect_uri(
     if uri.is_empty() {
         return Ok(HttpResponse::BadRequest().json(json!({"message": "uri is required"})));
     }
+    // Reject schemes that turn a redirect into script execution / file
+    // access. Only http(s) and well-formed custom schemes (for native /
+    // mobile apps) are allowed. The exact-match check at /authorize already
+    // prevents *unregistered* URIs from being used, but a malicious or
+    // sloppy admin could otherwise pin `javascript:alert(1)` here and turn
+    // the authorize response into XSS.
+    let lower = uri.to_ascii_lowercase();
+    let blocked_scheme = lower.starts_with("javascript:")
+        || lower.starts_with("data:")
+        || lower.starts_with("file:")
+        || lower.starts_with("vbscript:");
+    let allowed_scheme = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || is_custom_scheme(&lower);
+    if !allowed_scheme || blocked_scheme {
+        return Ok(HttpResponse::BadRequest().json(json!({
+            "message": "redirect_uri must use http(s) or a registered native scheme"
+        })));
+    }
     let Some(_client) = state.clients.find_by_id(id).await? else {
         return Ok(HttpResponse::NotFound().json(json!({"message": "client not found"})));
     };
@@ -703,9 +759,11 @@ async fn list_sessions(state: web::Data<SharedState>, req: HttpRequest) -> AppRe
     if let Err(r) = require_admin(&state, &req).await {
         return Ok(r);
     }
-    let sessions = state.sessions.find_all_active().await?;
-    let summaries: Vec<SessionSummary> =
-        sessions.iter().map(SessionSummary::from_session_only).collect();
+    let rows = state.sessions.find_all_active_with_user().await?;
+    let summaries: Vec<SessionSummary> = rows
+        .iter()
+        .map(|(s, u, e)| SessionSummary::from_session_with_user(s, Some(u.clone()), Some(e.clone())))
+        .collect();
     Ok(HttpResponse::Ok().json(summaries))
 }
 
@@ -721,9 +779,14 @@ async fn list_sessions_for_user(
         Ok(u) => u,
         Err(r) => return Ok(r),
     };
-    let sessions = state.sessions.find_active_by_user_id(user_id).await?;
-    let summaries: Vec<SessionSummary> =
-        sessions.iter().map(SessionSummary::from_session_only).collect();
+    let rows = state
+        .sessions
+        .find_active_by_user_id_with_user(user_id)
+        .await?;
+    let summaries: Vec<SessionSummary> = rows
+        .iter()
+        .map(|(s, u, e)| SessionSummary::from_session_with_user(s, Some(u.clone()), Some(e.clone())))
+        .collect();
     Ok(HttpResponse::Ok().json(summaries))
 }
 
@@ -784,4 +847,26 @@ async fn revoke_consent(
     };
     let _ = state.user_consents.delete_by_id(id).await?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// Matches the RFC 3986 `scheme` production followed by `://` — e.g.
+/// `com.example.app://callback`, `myapp+oauth://done`. Strict enough to
+/// reject pseudo-schemes like `javascript:` (no `://` after the colon)
+/// without false-rejecting legitimate mobile/native redirect URIs.
+fn is_custom_scheme(lower: &str) -> bool {
+    let Some(colon) = lower.find("://") else {
+        return false;
+    };
+    if colon == 0 {
+        return false;
+    }
+    let scheme = &lower[..colon];
+    let mut chars = scheme.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-')
 }

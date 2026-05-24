@@ -22,8 +22,11 @@ pub struct Config {
     pub cors: CorsConfig,
     pub redis_ttl: RedisTtlConfig,
     pub ratelimit: RateLimitConfig,
-    pub bootstrap: BootstrapConfig,
     pub keys_dir: Option<String>,
+    /// HMAC-SHA256 key for at-rest hashing of refresh / reset / verify
+    /// tokens. See `common::crypto::hmac_sha256`. MUST be a long random
+    /// value in production; rotating invalidates every live token.
+    pub token_hmac_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -101,13 +104,6 @@ pub struct RateLimitConfig {
     pub device_auth_client_window: Duration,
 }
 
-#[derive(Debug, Clone)]
-pub struct BootstrapConfig {
-    /// Toggles `KpjtikSeedBootstrap` (seed kpjtik-enduser client + lecturer
-    /// role + sample user `2207411058`). Off by default; flipped on in dev.
-    pub kpjtik_enabled: bool,
-}
-
 impl Config {
     pub fn load() -> Result<Self> {
         // Best-effort .env load (parity with `%dev` profile sane defaults).
@@ -132,7 +128,10 @@ impl Config {
             },
             redis: RedisConfig {
                 host: env_or("REDIS_HOST", "localhost"),
-                port: env_or("REDIS_PORT", "6379").parse().context("REDIS_PORT")?,
+                // Rust port runs Redis on 6380 so it never collides with the
+                // Java auth-server-but-java on 6379 — both can share the host
+                // during cutover.
+                port: env_or("REDIS_PORT", "6380").parse().context("REDIS_PORT")?,
                 password: env::var("REDIS_PASS").ok().or(Some("xerika".to_string())),
             },
             jwt: JwtConfig {
@@ -212,12 +211,11 @@ impl Config {
                     env_or("AUTH_RATELIMIT_DEVICE_AUTH_CLIENT_WINDOW_SECONDS", "60").parse()?,
                 ),
             },
-            bootstrap: BootstrapConfig {
-                kpjtik_enabled: env_or("AUTH_BOOTSTRAP_KPJTIK_ENABLED", "true")
-                    .parse()
-                    .unwrap_or(false),
-            },
             keys_dir: env::var("AUTH_JWT_KEYS_DIR").ok(),
+            token_hmac_key: env_or(
+                "AUTH_TOKEN_HMAC_KEY",
+                "dev-only-hmac-key-do-not-use-in-production-please-rotate-via-env",
+            ),
         })
     }
 }

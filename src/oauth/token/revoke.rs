@@ -6,7 +6,7 @@
 //! `token_type_hint != "refresh_token"` short-circuits to success.
 
 use crate::client::{Client, ClientRepository, ClientSecretHasher};
-use crate::common::crypto::sha256;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 
 use super::repository::RefreshTokenRepository;
 use super::result::RevokeResult;
@@ -15,13 +15,19 @@ use super::result::RevokeResult;
 pub struct RevokeFlow {
     clients: ClientRepository,
     refresh_tokens: RefreshTokenRepository,
+    hmac: HmacSha256,
 }
 
 impl RevokeFlow {
-    pub fn new(clients: ClientRepository, refresh_tokens: RefreshTokenRepository) -> Self {
+    pub fn new(
+        clients: ClientRepository,
+        refresh_tokens: RefreshTokenRepository,
+        hmac: HmacSha256,
+    ) -> Self {
         Self {
             clients,
             refresh_tokens,
+            hmac,
         }
     }
 
@@ -57,14 +63,13 @@ impl RevokeFlow {
             ));
         }
 
-        // Non-refresh-token hint → no-op success.
-        if let Some(hint) = token_type_hint.filter(|s| !s.is_empty()) {
-            if hint != "refresh_token" {
-                return Ok(RevokeResult::success());
-            }
-        }
+        // RFC 7009 §2.1 — token_type_hint is just a hint. We currently only
+        // revoke refresh tokens (access tokens are stateless JWTs that can't
+        // be revoked server-side until expiry). Try the refresh-token table
+        // regardless of the hint value.
+        let _ = token_type_hint;
 
-        let token_hash = sha256::base64_url(token);
+        let token_hash = self.hmac.compute(token);
         let Some(stored) = self.refresh_tokens.find_by_token_hash(&token_hash).await? else {
             return Ok(RevokeResult::success());
         };

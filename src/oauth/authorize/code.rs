@@ -6,6 +6,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::common::crypto::sha256;
 use crate::common::redis::keys;
 use crate::common::redis::lua;
 use crate::redis_pool::RedisPool;
@@ -46,7 +47,12 @@ impl AuthCodeStore {
         }
         code.created_at = Some(now);
         let payload = serde_json::to_string(&code)?;
-        let key = keys::auth_code(&code.code);
+        // Hash the raw code before using it as a Redis key. A Redis dump or
+        // KEYS-style scan would otherwise expose live authorization codes
+        // verbatim; storing the hash means an attacker who reads the
+        // keystore still needs the raw code (delivered only via redirect)
+        // to redeem.
+        let key = keys::auth_code(&sha256::base64_url(&code.code));
         let mut conn = self.redis.get().await?;
         // SET NX EX <ttl> — matches Java exactly. NX guarantees we never
         // overwrite an existing code (those should be already-consumed or
@@ -68,7 +74,7 @@ impl AuthCodeStore {
         if code.is_empty() {
             return Ok(None);
         }
-        let key = keys::auth_code(code);
+        let key = keys::auth_code(&sha256::base64_url(code));
         let mut conn = self.redis.get().await?;
         let raw: Option<String> = lua::GET_AND_DEL.key(key).invoke_async(&mut *conn).await?;
         let Some(raw) = raw else { return Ok(None) };
@@ -82,12 +88,6 @@ impl AuthCodeStore {
             return Ok(None);
         }
         Ok(Some(stored))
-    }
-
-    /// No-op — Redis TTL handles cleanup automatically. Kept for parity
-    /// with `AuthCodeStore.cleanupExpired()`.
-    pub fn cleanup_expired(&self) {
-        // intentional no-op
     }
 }
 

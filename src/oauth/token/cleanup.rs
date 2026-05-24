@@ -1,10 +1,17 @@
 //! Port of `RefreshTokenCleanupJob`.
 //!
-//! Hourly sweep of `refresh_tokens` rows that are expired or revoked. FK
-//! CASCADE handles the common case (logout deletes session → its tokens
-//! disappear), but rotated/revoked tokens persist until the parent session
-//! is gone, and a user that refreshes often without logging out can
-//! accumulate one revoked row per refresh. This job caps that growth.
+//! Hourly sweep of `refresh_tokens` rows whose natural `expires_at` has
+//! passed. FK CASCADE handles the common case (logout deletes session → its
+//! tokens disappear).
+//!
+//! IMPORTANT: only delete rows whose natural `expires_at` has passed. We do
+//! NOT drop merely-revoked rows, because the reuse-detection path in
+//! `TokenFlow::from_refresh_token` (OAuth 2.0 Security BCP §4.13) needs to
+//! find the revoked row when a stolen refresh token is replayed — if we'd
+//! purged it, the replay would return a generic `invalid_grant` and the
+//! legitimate token family would survive. Letting revoked rows age out
+//! alongside non-revoked ones keeps the detection window equal to the token
+//! TTL.
 
 use std::time::Duration;
 
@@ -29,7 +36,7 @@ pub fn start_refresh_token_cleanup(db: Db) -> tokio::task::JoinHandle<()> {
             tick.tick().await;
             match sweep_once(&db).await {
                 Ok(n) if n > 0 => {
-                    tracing::info!(deleted = n, "refresh token sweep: removed expired/revoked rows");
+                    tracing::info!(deleted = n, "refresh token sweep: removed expired rows");
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -43,8 +50,7 @@ pub fn start_refresh_token_cleanup(db: Db) -> tokio::task::JoinHandle<()> {
 async fn sweep_once(db: &Db) -> sqlx::Result<u64> {
     let res = sqlx::query(
         r#"DELETE FROM refresh_tokens
-           WHERE revoked = TRUE
-              OR (expires_at IS NOT NULL AND expires_at < $1)"#,
+           WHERE expires_at IS NOT NULL AND expires_at < $1"#,
     )
     .bind(Utc::now().naive_utc())
     .execute(db)

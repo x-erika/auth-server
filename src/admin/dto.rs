@@ -214,6 +214,26 @@ impl SessionSummary {
             expires_at: s.expires_at.map(|t| t.to_string()),
         }
     }
+
+    /// Variant that carries the joined username/email so the admin FE can
+    /// label sessions. Matches Java's eager-loaded `SessionSummary.from()`.
+    pub fn from_session_with_user(
+        s: &UserSession,
+        username: Option<String>,
+        email: Option<String>,
+    ) -> Self {
+        Self {
+            id: s.id.to_string(),
+            user_id: s.user_id.to_string(),
+            username,
+            email,
+            ip_address: s.ip_address.clone(),
+            user_agent: s.user_agent.clone(),
+            created_at: Some(s.created_at.to_string()),
+            last_accessed_at: s.last_accessed_at.map(|t| t.to_string()),
+            expires_at: s.expires_at.map(|t| t.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

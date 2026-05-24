@@ -5,6 +5,7 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
+use crate::common::crypto::jwt::JwtValidator;
 use crate::common::web::bearer;
 use crate::error::AppResult;
 use crate::oauth::scopes;
@@ -24,6 +25,12 @@ async fn userinfo(state: web::Data<SharedState>, req: HttpRequest) -> AppResult<
     let Some(token) = bearer::extract(&req) else {
         return Ok(invalid_token_response());
     };
+    // RFC 9068 §4: protected resources reject anything that isn't
+    // typ=at+jwt. Stops an id_token (matching iss/aud/exp/sig) from being
+    // presented as an access_token here.
+    if !JwtValidator::is_access_token_type(&token) {
+        return Ok(invalid_token_response());
+    }
     let Some(claims) = state.jwt_validator.validate(&token) else {
         return Ok(invalid_token_response());
     };
@@ -57,6 +64,26 @@ async fn userinfo(state: web::Data<SharedState>, req: HttpRequest) -> AppResult<
     let Some(user) = user.filter(|u| u.enabled) else {
         return Ok(invalid_token_response());
     };
+
+    // Bind the access token back to its originating session. The token JWT
+    // carries `sid` (TokenIssuer::build_access_token_claims), so an admin
+    // who revokes the user_session row should immediately invalidate every
+    // access_token issued under it — closing the "JWT is stateless so I
+    // can't revoke it" gap for the userinfo path. client_credentials tokens
+    // have no sid and pass through (no session to validate against).
+    if let Some(sid_val) = claims.get("sid").filter(|v| !v.is_null()) {
+        let sid_str = match sid_val.as_str() {
+            Some(s) => s,
+            None => return Ok(invalid_token_response()),
+        };
+        let sid = match Uuid::parse_str(sid_str) {
+            Ok(u) => u,
+            Err(_) => return Ok(invalid_token_response()),
+        };
+        if state.sessions.find_by_id(sid).await?.is_none() {
+            return Ok(invalid_token_response());
+        }
+    }
 
     let mut info = Map::new();
     info.insert("sub".to_string(), json!(user.id.to_string()));
@@ -120,11 +147,10 @@ async fn discovery(state: web::Data<SharedState>) -> HttpResponse {
         "frontchannel_logout_session_supported": true,
         "backchannel_logout_supported": true,
         "backchannel_logout_session_supported": true,
-        "request_parameter_supported": true,
+        "request_parameter_supported": false,
         "request_uri_parameter_supported": false,
         "require_request_uri_registration": false,
         "claims_parameter_supported": true,
-        "request_object_signing_alg_values_supported": ["HS256"],
         "device_authorization_endpoint": format!("{issuer}/oauth/device-authorization"),
         "jwks_uri": format!("{issuer}/.well-known/jwks.json"),
         "response_types_supported": ["code"],

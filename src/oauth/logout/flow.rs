@@ -139,7 +139,8 @@ impl LogoutFlow {
         let Some(token) = id_token_hint.filter(|s| !s.is_empty()) else {
             return Ok(None);
         };
-        let Some(claims) = self.jwt_validator.validate(token) else {
+        // OIDC RP-Initiated Logout 1.0 §3: accept the hint even when expired.
+        let Some(claims) = self.jwt_validator.validate_allow_expired(token) else {
             return Ok(None);
         };
         let Some(aud) = claims.get("aud") else {
@@ -163,9 +164,9 @@ impl LogoutFlow {
         id_token_hint: Option<&str>,
         session_token: Option<&str>,
     ) -> anyhow::Result<Option<Uuid>> {
-        // 1. id_token_hint.sid
+        // 1. id_token_hint.sid (expired id_tokens still count — see resolve_client_from_id_token_hint).
         if let Some(token) = id_token_hint.filter(|s| !s.is_empty()) {
-            if let Some(claims) = self.jwt_validator.validate(token) {
+            if let Some(claims) = self.jwt_validator.validate_allow_expired(token) {
                 if let Some(sid) = claims.get("sid").and_then(|v| v.as_str()) {
                     if let Ok(u) = Uuid::parse_str(sid) {
                         return Ok(Some(u));

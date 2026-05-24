@@ -59,6 +59,16 @@ impl IntrospectFlow {
             return Ok(IntrospectResult::success(json!({ "active": false })));
         };
 
+        // Bind introspection to the calling client. RFC 7662 lets each
+        // resource server introspect "its own" tokens; without this check,
+        // Client A could POST Client B's access_token and read every claim
+        // — email, roles, sid. Return the spec-correct "active: false"
+        // instead of an error so a malicious caller can't distinguish
+        // "token doesn't belong to you" from "token doesn't exist".
+        if !audience_matches(claims.get("aud"), &client.client_id) {
+            return Ok(IntrospectResult::success(json!({ "active": false })));
+        }
+
         let mut payload = Map::new();
         payload.insert("active".to_string(), json!(true));
         if let Value::Object(obj) = claims {
@@ -68,6 +78,20 @@ impl IntrospectFlow {
         }
         Ok(IntrospectResult::success(Value::Object(payload)))
     }
+}
+
+fn audience_matches(aud: Option<&Value>, expected: &str) -> bool {
+    let Some(aud) = aud else { return false };
+    if aud.is_null() {
+        return false;
+    }
+    if let Some(s) = aud.as_str() {
+        return s == expected;
+    }
+    if let Some(arr) = aud.as_array() {
+        return arr.iter().any(|v| v.as_str() == Some(expected));
+    }
+    false
 }
 
 fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool {

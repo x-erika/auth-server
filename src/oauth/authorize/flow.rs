@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use serde_json::Value;
 use uuid::Uuid;
 
 use crate::client::ClientRepository;
@@ -16,7 +15,6 @@ use crate::oauth::scopes;
 use crate::session::SessionService;
 
 use super::code::{AuthCodeStore, AuthorizationCode};
-use super::request_object::RequestObjectParser;
 use super::result::AuthorizeResult;
 
 const AUTH_CODE_TTL_MINUTES: i64 = 3;
@@ -24,8 +22,10 @@ const AUTH_CODE_BYTES: usize = 48;
 const CONSENT_REQUEST_TTL_MINUTES: i64 = 10;
 /// After re-auth via /login, treat `prompt=login` as already-satisfied for
 /// this long. Without the grace, every redirect-back from `/login` would
-/// re-trigger the prompt and loop.
-const REAUTH_GRACE_SECONDS: i64 = 30;
+/// re-trigger the prompt and loop. Kept short (~10s) so a phishing flow
+/// that tricks a user into a fresh login can't piggyback on the grace
+/// window beyond the natural redirect round-trip.
+const REAUTH_GRACE_SECONDS: i64 = 10;
 
 #[derive(Clone)]
 pub struct AuthorizeFlow {
@@ -49,7 +49,6 @@ pub struct AuthorizeRequest<'a> {
     pub max_age: Option<i64>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
-    pub request_jwt: Option<&'a str>,
     pub claims_json: Option<&'a str>,
 }
 
@@ -79,7 +78,7 @@ impl AuthorizeFlow {
         }
 
         let client_id_str = req.client_id.unwrap_or("").trim().to_string();
-        let mut redirect_uri = req.redirect_uri.unwrap_or("").to_string();
+        let redirect_uri = req.redirect_uri.unwrap_or("").to_string();
         if client_id_str.is_empty() || redirect_uri.is_empty() {
             return Ok(AuthorizeResult::error(
                 "invalid_request",
@@ -133,41 +132,19 @@ impl AuthorizeFlow {
             ));
         };
 
-        let mut scope = req.scope.map(|s| s.to_string());
-        let mut state = req.state.map(|s| s.to_string());
-        let mut nonce = req.nonce.map(|s| s.to_string());
-        let mut code_challenge = req.code_challenge.map(|s| s.to_string());
-        let mut code_challenge_method = req.code_challenge_method.map(|s| s.to_string());
-        let mut claims_json = req.claims_json.map(|s| s.to_string());
+        let scope = req.scope.map(|s| s.to_string());
+        let state = req.state.map(|s| s.to_string());
+        let nonce = req.nonce.map(|s| s.to_string());
+        let code_challenge = req.code_challenge.map(|s| s.to_string());
+        let code_challenge_method = req.code_challenge_method.map(|s| s.to_string());
+        let claims_json = req.claims_json.map(|s| s.to_string());
 
-        // Request object override (HS256 JWS signed by client_secret).
-        if let Some(jwt) = req.request_jwt.filter(|s| !s.trim().is_empty()) {
-            match RequestObjectParser::parse(jwt, &client) {
-                Some(payload) => {
-                    if let Some(v) = payload.get("redirect_uri").and_then(|n| n.as_str()) {
-                        if !v.is_empty() {
-                            redirect_uri = v.to_string();
-                        }
-                    }
-                    override_opt(&mut scope, &payload, "scope");
-                    override_opt(&mut state, &payload, "state");
-                    override_opt(&mut nonce, &payload, "nonce");
-                    override_opt(&mut code_challenge, &payload, "code_challenge");
-                    override_opt(&mut code_challenge_method, &payload, "code_challenge_method");
-                    if let Some(c) = payload.get("claims") {
-                        if !c.is_null() {
-                            claims_json = Some(c.to_string());
-                        }
-                    }
-                }
-                None => {
-                    return Ok(AuthorizeResult::error(
-                        "invalid_request_object",
-                        "Could not validate request JWT",
-                    ));
-                }
-            }
-        }
+        // JAR (Request Object, RFC 9101) support removed: the previous HS256
+        // implementation required client.client_secret as the HMAC key,
+        // which is now Argon2-hashed at rest — verification could never
+        // succeed for anything but legacy plaintext rows. A correct JAR
+        // implementation needs either a separate raw-secret column or
+        // RS256 against the client's registered JWKS; we ship neither.
 
         // From here on, redirect_uri is checked against registered set.
         if !self
@@ -191,15 +168,25 @@ impl AuthorizeFlow {
             ));
         }
 
-        // PKCE method validation (whenever a challenge is present).
+        // PKCE method validation (whenever a challenge is present). With
+        // `plain` removed (OAuth 2.0 Security BCP §2.1.1.1), a missing
+        // `code_challenge_method` is no longer "default to plain" — it's
+        // an outright invalid_request.
         let mut resolved_method: Option<String> = None;
         let has_challenge = code_challenge.as_deref().is_some_and(|c| !c.is_empty());
         if has_challenge {
-            let method = code_challenge_method
+            let Some(method) = code_challenge_method
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .unwrap_or("plain")
-                .to_string();
+                .map(|s| s.to_string())
+            else {
+                return Ok(error_redirect(
+                    &redirect_uri,
+                    state.as_deref(),
+                    "invalid_request",
+                    "code_challenge_method is required (only S256 supported)",
+                ));
+            };
             if !pkce::is_method_supported(Some(&method)) {
                 return Ok(error_redirect(
                     &redirect_uri,
@@ -332,7 +319,7 @@ impl AuthorizeFlow {
         code_challenge_method: Option<&str>,
         claims_requested: Option<&str>,
     ) -> anyhow::Result<AuthorizeResult> {
-        self.auth_codes.cleanup_expired();
+        // Expired authorization codes are reaped by Redis TTL automatically.
         let code = random_tokens::url_safe(AUTH_CODE_BYTES);
         let expires_at = Utc::now().naive_utc() + ChronoDuration::minutes(AUTH_CODE_TTL_MINUTES);
         let stored = AuthorizationCode {
@@ -394,10 +381,3 @@ fn build_redirect(base_uri: &str, params: &[(&str, String)]) -> String {
     out
 }
 
-fn override_opt(target: &mut Option<String>, payload: &Value, field: &str) {
-    if let Some(v) = payload.get(field).and_then(|n| n.as_str()) {
-        if !v.is_empty() {
-            *target = Some(v.to_string());
-        }
-    }
-}

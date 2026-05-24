@@ -155,21 +155,28 @@ impl RsaKeyProvider {
         (active, pair.encoding_key.clone())
     }
 
-    /// Decoding key for a specific `kid`. Falls back to the active key if `kid`
-    /// is unknown — matches `publicKeyByKid(kid).orElse(publicKey())`.
-    pub fn decoding_key_by_kid(&self, kid: Option<&str>) -> DecodingKey {
+    /// Decoding key for a specific `kid`.
+    ///
+    /// * `Some(kid)` → returns the matching key, or `None` if the kid is
+    ///   unknown. We **do not** fall back to the active key for an unknown
+    ///   kid: a JWT signed by some other key wouldn't verify against the
+    ///   active one anyway, but the same failure path is shared with forged
+    ///   tokens, which makes key-rotation bugs hard to diagnose.
+    /// * `None` → returns the active key, supporting legacy/pre-kid tokens
+    ///   we minted ourselves.
+    pub fn decoding_key_by_kid(&self, kid: Option<&str>) -> Option<DecodingKey> {
         let store = self.inner.read().unwrap();
-        if let Some(k) = kid {
-            if let Some(pair) = store.by_kid.get(k) {
-                return pair.decoding_key.clone();
-            }
+        match kid {
+            Some(k) if !k.is_empty() => store.by_kid.get(k).map(|p| p.decoding_key.clone()),
+            _ => Some(
+                store
+                    .by_kid
+                    .get(&store.active_kid)
+                    .expect("active kid must be loaded")
+                    .decoding_key
+                    .clone(),
+            ),
         }
-        store
-            .by_kid
-            .get(&store.active_kid)
-            .expect("active kid must be loaded")
-            .decoding_key
-            .clone()
     }
 
     /// All known public keys, suitable for JWKS publication. Result includes
@@ -186,6 +193,35 @@ impl RsaKeyProvider {
                 decoding_key: pair.decoding_key.clone(),
             })
             .collect()
+    }
+
+    /// Permanently retire a non-active key: drop it from the in-memory set,
+    /// stop publishing it in JWKS, delete the PEM files on disk. Any JWT
+    /// still signed by the retired key fails validation immediately. The
+    /// active key cannot be retired (rotate first).
+    ///
+    /// Returns `Ok(true)` if the kid was found and removed, `Ok(false)` if
+    /// it was unknown, and `Err(...)` if the caller tried to retire the
+    /// currently-active key.
+    pub fn retire(&self, kid: &str) -> Result<bool> {
+        if kid.is_empty() {
+            return Ok(false);
+        }
+        let mut store = self.inner.write().unwrap();
+        if kid == store.active_kid {
+            return Err(anyhow!(
+                "Cannot retire the active key — rotate first"
+            ));
+        }
+        if store.by_kid.remove(kid).is_none() {
+            return Ok(false);
+        }
+        let priv_path = self.keys_dir.join(format!("{kid}.private.pem"));
+        let pub_path = self.keys_dir.join(format!("{kid}.public.pem"));
+        let _ = fs::remove_file(&priv_path);
+        let _ = fs::remove_file(&pub_path);
+        tracing::info!(%kid, "retired signing key");
+        Ok(true)
     }
 
     /// Generate + persist a fresh keypair and flip the active marker over.

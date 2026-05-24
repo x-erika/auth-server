@@ -20,8 +20,12 @@ use rand::rngs::OsRng;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
 
-const ITERATIONS: u32 = 5;
-const MEMORY_KB: u32 = 7168;
+// OWASP 2024 Argon2id baseline (12 MiB memory, 3 iterations, p=1). Old
+// credentials remain verifiable because `verify_inner` reads each row's
+// own stored params from `credentialData` JSON, so existing hashes don't
+// break — only new writes use the stronger settings.
+const ITERATIONS: u32 = 3;
+const MEMORY_KB: u32 = 12288;
 const PARALLELISM: u32 = 1;
 const HASH_LENGTH: usize = 32;
 
@@ -53,7 +57,9 @@ pub fn hash(raw_password: &str) -> Hashed {
         B64.encode(&output),
         B64.encode(salt),
     );
-    let credential_data = r#"{"hashIterations":5,"algorithm":"argon2","additionalParameters":{"hashLength":["32"],"memory":["7168"],"type":["id"],"parallelism":["1"]}}"#.to_string();
+    let credential_data = format!(
+        r#"{{"hashIterations":{ITERATIONS},"algorithm":"argon2","additionalParameters":{{"hashLength":["{HASH_LENGTH}"],"memory":["{MEMORY_KB}"],"type":["id"],"parallelism":["{PARALLELISM}"]}}}}"#
+    );
 
     Hashed {
         secret_data,

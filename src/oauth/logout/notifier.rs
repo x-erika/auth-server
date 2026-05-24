@@ -43,6 +43,18 @@ impl BackchannelLogoutNotifier {
         };
         let uri = uri.to_string();
         let client_id = client.client_id.clone();
+        // Scheme allowlist: backchannel POST is admin-configured, but a
+        // misconfigured / compromised admin could otherwise point this at
+        // file://, ftp://, gopher:// etc. for SSRF probing. Only HTTP(S).
+        let scheme_ok = uri
+            .splitn(2, ':')
+            .next()
+            .map(|s| s.eq_ignore_ascii_case("http") || s.eq_ignore_ascii_case("https"))
+            .unwrap_or(false);
+        if !scheme_ok {
+            tracing::warn!(target = %uri, %client_id, "backchannel logout skipped — scheme not allowed");
+            return;
+        }
         let signer = self.jwt_signer.clone();
         tokio::spawn(async move {
             let token = match signer.sign_logout_token(

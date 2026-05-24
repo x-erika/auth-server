@@ -24,8 +24,8 @@ async fn forgot_password(
     state: web::Data<SharedState>,
     body: web::Json<HashMap<String, String>>,
 ) -> AppResult<HttpResponse> {
-    // Java accepts `identifier`, `email`, `nim`, `nip` (the kpjtik FE used
-    // the last two before consolidating). We keep them for compat.
+    // Accept several common identifier field names for compat with the
+    // various FEs that have used this endpoint over time.
     let identifier = first_non_blank(&body, &["identifier", "email", "nim", "nip"]);
     let token = state
         .password_flow
@@ -90,18 +90,27 @@ async fn change_password(
     let new_password =
         first_non_blank(&body, &["newPassword", "new_password"]).unwrap_or_default();
 
-    match state
+    let outcome = state
         .password_flow
-        .change_password(session.session.user_id, &old_password, &new_password)
-        .await?
-    {
-        Ok(()) => Ok(HttpResponse::Ok().json(json!({"message": "password changed"}))),
-        Err(ChangeError::WrongPassword) => {
+        .change_password(
+            session.session.user_id,
+            Some(session.session.id),
+            &old_password,
+            &new_password,
+        )
+        .await;
+    match outcome {
+        Ok(Ok(())) => Ok(HttpResponse::Ok().json(json!({"message": "password changed"}))),
+        Ok(Err(ChangeError::WrongPassword)) => {
             Ok(HttpResponse::BadRequest().json(json!({"error": "wrong_password"})))
         }
-        Err(ChangeError::WeakPassword) => {
+        Ok(Err(ChangeError::WeakPassword)) => {
             Ok(HttpResponse::BadRequest().json(json!({"error": "weak_password"})))
         }
+        Err(ConsumeResetIoError::Db(e)) => Err(AppError::Db(e)),
+        Err(ConsumeResetIoError::Session(e)) => Err(AppError::Other(anyhow::anyhow!(
+            "change_password failed: {e}"
+        ))),
     }
 }
 

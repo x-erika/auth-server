@@ -1,6 +1,6 @@
 //! DTOs for `LoginResource` / `LoginPageResource`. Field naming mirrors the
-//! Java records exactly so existing API clients (admin FE, kpjtik app) keep
-//! working without a renaming sweep.
+//! Java records exactly so existing API clients keep working without a
+//! renaming sweep.
 
 use serde::{Deserialize, Serialize};
 

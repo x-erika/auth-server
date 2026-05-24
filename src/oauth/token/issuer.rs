@@ -13,9 +13,9 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::client::Client;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 use crate::common::crypto::jwt::JwtSigner;
 use crate::common::crypto::random_tokens;
-use crate::common::crypto::sha256;
 use crate::oauth::authorize::ClaimsRequest;
 use crate::oauth::scopes;
 use crate::role::RoleRepository;
@@ -32,6 +32,7 @@ pub struct TokenIssuer {
     jwt_signer: Arc<JwtSigner>,
     roles: RoleRepository,
     refresh_tokens: RefreshTokenRepository,
+    hmac: HmacSha256,
 }
 
 impl TokenIssuer {
@@ -39,11 +40,13 @@ impl TokenIssuer {
         jwt_signer: Arc<JwtSigner>,
         roles: RoleRepository,
         refresh_tokens: RefreshTokenRepository,
+        hmac: HmacSha256,
     ) -> Self {
         Self {
             jwt_signer,
             roles,
             refresh_tokens,
+            hmac,
         }
     }
 
@@ -91,7 +94,7 @@ impl TokenIssuer {
         )?;
 
         let refresh_token_raw = random_tokens::url_safe(48);
-        let refresh_token_hash = sha256::base64_url(&refresh_token_raw);
+        let refresh_token_hash = self.hmac.compute(&refresh_token_raw);
         let now = Utc::now().naive_utc();
         let refresh = RefreshToken {
             id: Uuid::new_v4(),

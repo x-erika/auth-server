@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use crate::client::ClientRepository;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::common::ratelimit::RateLimiter;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub rsa_keys: Arc<RsaKeyProvider>,
     pub jwt_signer: Arc<JwtSigner>,
     pub jwt_validator: Arc<JwtValidator>,
+    pub token_hmac: HmacSha256,
 
     // Repositories + services (Phase 3) — all Clone-able cheaply (they wrap
     // Arc-backed PgPool / RedisPool handles).

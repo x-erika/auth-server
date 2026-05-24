@@ -50,4 +50,25 @@ impl PasswordResetRepository {
             .await
             .map(|_| ())
     }
+
+    /// Mark every still-active reset token for `user_id` as consumed, except
+    /// `keep_id` (which the caller is about to consume itself). Defends
+    /// against the case where a user requested multiple resets — once one is
+    /// used, the rest should not remain available for replay.
+    pub async fn consume_sibling_tokens(
+        &self,
+        user_id: Uuid,
+        keep_id: Uuid,
+    ) -> sqlx::Result<u64> {
+        let res = sqlx::query(
+            r#"UPDATE password_resets
+               SET consumed_at = NOW()
+               WHERE user_id = $1 AND id <> $2 AND consumed_at IS NULL"#,
+        )
+        .bind(user_id)
+        .bind(keep_id)
+        .execute(&self.db)
+        .await?;
+        Ok(res.rows_affected())
+    }
 }

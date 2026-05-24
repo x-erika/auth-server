@@ -3,7 +3,7 @@
 use chrono::Utc;
 
 use crate::client::{Client, ClientRepository, ClientSecretHasher};
-use crate::common::crypto::sha256;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 use crate::db::Db;
 use crate::oauth::authorize::AuthCodeStore;
 use crate::oauth::device::{
@@ -29,6 +29,7 @@ pub struct TokenFlow {
     refresh_tokens: RefreshTokenRepository,
     issuer: TokenIssuer,
     device_repo: DeviceAuthorizationRepository,
+    hmac: HmacSha256,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -55,6 +56,7 @@ impl TokenFlow {
         refresh_tokens: RefreshTokenRepository,
         issuer: TokenIssuer,
         device_repo: DeviceAuthorizationRepository,
+        hmac: HmacSha256,
     ) -> Self {
         Self {
             db,
@@ -65,6 +67,7 @@ impl TokenFlow {
             refresh_tokens,
             issuer,
             device_repo,
+            hmac,
         }
     }
 
@@ -345,7 +348,7 @@ impl TokenFlow {
             ));
         }
 
-        let refresh_hash = sha256::base64_url(raw);
+        let refresh_hash = self.hmac.compute(raw);
 
         // Single transaction holds the FOR UPDATE row lock across
         // read → check → revoke → insert-new. Two concurrent refreshes with

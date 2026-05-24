@@ -163,7 +163,7 @@ impl JwtValidator {
     /// Validates without audience binding — equivalent to `validate(token)` on
     /// the Java side.
     pub fn validate(&self, token: &str) -> Option<Value> {
-        self.validate_with(token, None)
+        self.validate_internal(token, None, false)
     }
 
     /// Validates and additionally enforces that the token's `aud` matches
@@ -171,33 +171,67 @@ impl JwtValidator {
     /// token should be bound to (e.g. an OIDC client checking an id_token
     /// meant for itself).
     pub fn validate_with(&self, token: &str, expected_audience: Option<&str>) -> Option<Value> {
+        self.validate_internal(token, expected_audience, false)
+    }
+
+    /// Validates signature + iss + (nbf) but tolerates an expired `exp`. Used
+    /// by `/oauth/logout` for the `id_token_hint`: OIDC RP-Initiated Logout
+    /// 1.0 §3 says the OP SHOULD accept the hint regardless of expiry,
+    /// because users often log out after their id_token's lifetime has
+    /// lapsed.
+    pub fn validate_allow_expired(&self, token: &str) -> Option<Value> {
+        self.validate_internal(token, None, true)
+    }
+
+    /// RFC 9068 §4 — protected resources SHOULD reject anything that is not
+    /// `typ=at+jwt`, so an id_token (which has matching iss/aud/exp) can't
+    /// be presented as an access token via the same Bearer header.
+    /// Returns `true` if the JWT header carries `typ: at+jwt`. Does NOT
+    /// verify the signature — call alongside `validate()` for that.
+    pub fn is_access_token_type(token: &str) -> bool {
+        decode_header(token)
+            .ok()
+            .and_then(|h| h.typ)
+            .is_some_and(|t| t.eq_ignore_ascii_case("at+jwt"))
+    }
+
+    fn validate_internal(
+        &self,
+        token: &str,
+        expected_audience: Option<&str>,
+        allow_expired: bool,
+    ) -> Option<Value> {
         if token.trim().is_empty() {
             return None;
         }
 
-        // Pull the kid out of the header before deciding which public key to
-        // verify against — Java does the same kid-or-active fallback.
         let header = decode_header(token).ok()?;
         if header.alg != Algorithm::RS256 {
             // Lock the algorithm: anything but RS256 is rejected up-front.
             // Defends against alg=none, HS256-confusion, etc.
             return None;
         }
-        let decoding_key = self.keys.decoding_key_by_kid(header.kid.as_deref());
+        // Strict kid lookup: if the header names a kid that we don't know,
+        // reject outright instead of falling back to the active key. Missing
+        // kid is allowed (legacy / our own pre-kid issuance) and uses the
+        // active key.
+        let decoding_key = self.keys.decoding_key_by_kid(header.kid.as_deref())?;
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[&self.expected_issuer]);
-        validation.validate_exp = true;
+        validation.validate_exp = !allow_expired;
         validation.validate_nbf = true;
+        if allow_expired {
+            // jsonwebtoken's `validate_exp = false` still rejects missing `exp`.
+            // Required-spec-claims keeps the presence check; we just disabled
+            // the freshness comparison.
+            validation.leeway = 0;
+        }
         if let Some(aud) = expected_audience {
             validation.set_audience(&[aud]);
         } else {
-            // Default `aud` validation requires the claim to be present and
-            // match. Java only enforces aud when the caller asks for it, so
-            // we mirror that.
             validation.validate_aud = false;
         }
-        // Required claim parity with Java: iss + exp.
         validation.set_required_spec_claims(&["iss", "exp"]);
 
         decode::<Value>(token, &decoding_key, &validation)

@@ -17,8 +17,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use uuid::Uuid;
 
 use crate::common::crypto::argon2 as argon2_hasher;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 use crate::common::crypto::random_tokens;
-use crate::common::crypto::sha256;
 use crate::db::Db;
 use crate::role::RoleRepository;
 use crate::user::{Credential, User};
@@ -36,6 +36,7 @@ pub struct SignupFlow {
     db: Db,
     roles: RoleRepository,
     email_verifications: EmailVerificationRepository,
+    hmac: HmacSha256,
 }
 
 pub struct SignupSuccess {
@@ -52,11 +53,13 @@ impl SignupFlow {
         db: Db,
         roles: RoleRepository,
         email_verifications: EmailVerificationRepository,
+        hmac: HmacSha256,
     ) -> Self {
         Self {
             db,
             roles,
             email_verifications,
+            hmac,
         }
     }
 
@@ -184,7 +187,7 @@ impl SignupFlow {
         }
 
         let token_raw = random_tokens::url_safe(VERIFICATION_TOKEN_BYTES);
-        let token_hash = sha256::base64_url(&token_raw);
+        let token_hash = self.hmac.compute(&token_raw);
         let verification = EmailVerification {
             id: Uuid::new_v4(),
             user_id: user.id,
@@ -224,7 +227,7 @@ impl SignupFlow {
             return Err(VerifyEmailError::InvalidRequest("token is required"));
         }
 
-        let hash = sha256::base64_url(token_raw);
+        let hash = self.hmac.compute(token_raw);
         let verification = match self
             .email_verifications
             .find_by_token_hash(&hash)

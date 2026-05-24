@@ -40,7 +40,6 @@ struct AuthorizeQuery {
     max_age: Option<i64>,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
-    request: Option<String>,
     claims: Option<String>,
 }
 
@@ -64,7 +63,6 @@ async fn authorize(
             max_age: query.max_age,
             code_challenge: query.code_challenge.as_deref(),
             code_challenge_method: query.code_challenge_method.as_deref(),
-            request_jwt: query.request.as_deref(),
             claims_json: query.claims.as_deref(),
         })
         .await

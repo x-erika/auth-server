@@ -37,6 +37,7 @@ use tracing_actix_web::TracingLogger;
 use tracing_subscriber::EnvFilter;
 
 use crate::client::ClientRepository;
+use crate::common::crypto::hmac_sha256::HmacSha256;
 use crate::common::crypto::jwt::{JwtSigner, JwtValidator};
 use crate::common::crypto::rsa_keys::RsaKeyProvider;
 use crate::common::ratelimit::RateLimiter;
@@ -116,6 +117,7 @@ async fn main() -> anyhow::Result<()> {
         rsa_keys.clone(),
         cfg.server.issuer_url.clone(),
     ));
+    let token_hmac = HmacSha256::new(cfg.token_hmac_key.clone());
 
     // Repositories. Pool handles are Arc-backed, so cloning is cheap.
     let users = UserRepository::new(db.clone());
@@ -133,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         db.clone(),
         roles.clone(),
         email_verifications.clone(),
+        token_hmac.clone(),
     );
     let password_resets = PasswordResetRepository::new(db.clone());
     let password_flow = PasswordFlow::new(
@@ -140,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
         credentials.clone(),
         password_resets.clone(),
         sessions.clone(),
+        token_hmac.clone(),
     );
 
     // Phase 6 + 7 — OAuth core + consent + device + logout.
@@ -149,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_signer.clone(),
         roles.clone(),
         refresh_tokens.clone(),
+        token_hmac.clone(),
     );
     let device_repo = DeviceAuthorizationRepository::new(redis.clone());
     let token_flow = TokenFlow::new(
@@ -160,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
         refresh_tokens.clone(),
         token_issuer.clone(),
         device_repo.clone(),
+        token_hmac.clone(),
     );
     let user_consents = UserConsentRepository::new(db.clone());
     let consent_service = ConsentService::new(user_consents.clone());
@@ -173,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
         pending_authorizations.clone(),
     );
     let introspect_flow = IntrospectFlow::new(clients.clone(), jwt_validator.clone());
-    let revoke_flow = RevokeFlow::new(clients.clone(), refresh_tokens.clone());
+    let revoke_flow = RevokeFlow::new(clients.clone(), refresh_tokens.clone(), token_hmac.clone());
     let device_flow = DeviceFlow::new(
         clients.clone(),
         session_service.clone(),
@@ -192,21 +198,13 @@ async fn main() -> anyhow::Result<()> {
         cfg.server.issuer_url.clone(),
     );
 
-    // Phase 8 — startup seeders (role + admin + client bootstraps + KPJTIK).
+    // Phase 8 — startup seeders (role + admin + client bootstraps).
     // Run sequentially: `RoleBootstrap` must finish before `AdminBootstrap`
     // tries to assign the `admin` role. Each acquires `pg_advisory_xact_lock`
     // independently so multi-replica deploys converge cleanly.
-    bootstrap::ensure_core_roles(&db, &roles, cfg.bootstrap.kpjtik_enabled).await?;
+    bootstrap::ensure_core_roles(&db, &roles).await?;
     bootstrap::ensure_admin_user(&db, &users, &credentials, &roles).await?;
-    bootstrap::ensure_bootstrap_clients(&db, &clients, cfg.bootstrap.kpjtik_enabled).await?;
-    bootstrap::ensure_kpjtik_seed(
-        &db,
-        &users,
-        &credentials,
-        &roles,
-        cfg.bootstrap.kpjtik_enabled,
-    )
-    .await?;
+    bootstrap::ensure_bootstrap_clients(&db, &clients).await?;
     tracing::info!("bootstrap routines completed");
 
     // Spawn refresh-token cleanup loop.
@@ -219,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         rsa_keys,
         jwt_signer,
         jwt_validator,
+        token_hmac: token_hmac.clone(),
         users,
         credentials,
         roles,
