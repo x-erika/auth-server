@@ -20,10 +20,12 @@ impl RefreshTokenRepository {
         Self { db }
     }
 
+    #[allow(dead_code)]
     pub fn db(&self) -> &Db {
         &self.db
     }
 
+    #[allow(dead_code)]
     pub async fn find_by_id(&self, id: Uuid) -> sqlx::Result<Option<RefreshToken>> {
         sqlx::query_as::<_, RefreshToken>("SELECT * FROM refresh_tokens WHERE id = $1")
             .bind(id)
@@ -80,6 +82,7 @@ impl RefreshTokenRepository {
         .map(|_| ())
     }
 
+    #[allow(dead_code)]
     pub async fn persist(&self, t: &RefreshToken) -> sqlx::Result<()> {
         sqlx::query(
             r#"INSERT INTO refresh_tokens

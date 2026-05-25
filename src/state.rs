@@ -17,6 +17,7 @@ use crate::role::RoleRepository;
 use crate::session::{SessionRepository, SessionService};
 use crate::user::{CredentialRepository, UserRepository};
 
+#[allow(dead_code)]
 pub struct AppState {
     pub config: Config,
     pub db: Db,

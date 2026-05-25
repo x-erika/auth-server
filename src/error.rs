@@ -6,6 +6,7 @@ use actix_web::{HttpResponse, ResponseError, http::StatusCode};
 use serde_json::json;
 
 #[derive(thiserror::Error, Debug)]
+#[allow(dead_code)]
 pub enum AppError {
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -46,6 +47,7 @@ pub enum AppError {
 }
 
 impl AppError {
+    #[allow(dead_code)]
     pub fn oauth(status: StatusCode, error: impl Into<String>, description: impl Into<String>) -> Self {
         Self::OAuth {
             status,

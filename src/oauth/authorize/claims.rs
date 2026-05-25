@@ -44,6 +44,7 @@ impl ClaimsRequest {
         &self.userinfo_claims
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.id_token_claims.is_empty() && self.userinfo_claims.is_empty()
     }

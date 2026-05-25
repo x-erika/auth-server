@@ -26,6 +26,11 @@ pub struct TokenFlow {
     users: UserRepository,
     sessions: SessionRepository,
     auth_codes: AuthCodeStore,
+    // Mirrors Java's `@Inject RefreshTokenRepository` (TokenFlow.java:40). Rust
+    // calls go through `RefreshTokenRepository::*_in_tx` static methods because
+    // sqlx threads the transaction explicitly, so this field isn't read via
+    // `self.` — kept for 1:1 parity with the Java DI shape.
+    #[allow(dead_code)]
     refresh_tokens: RefreshTokenRepository,
     issuer: TokenIssuer,
     device_repo: DeviceAuthorizationRepository,

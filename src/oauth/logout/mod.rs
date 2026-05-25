@@ -6,4 +6,3 @@ pub mod result;
 
 pub use flow::LogoutFlow;
 pub use notifier::BackchannelLogoutNotifier;
-pub use result::LogoutResult;

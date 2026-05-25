@@ -6,6 +6,4 @@ pub mod repository;
 pub mod result;
 
 pub use flow::DeviceFlow;
-pub use model::{DeviceAuthorization, DeviceStatus};
 pub use repository::DeviceAuthorizationRepository;
-pub use result::{DeviceAuthorizationResult, DeviceVerifyResult};

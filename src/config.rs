@@ -83,6 +83,7 @@ pub struct CorsConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RedisTtlConfig {
     pub authcode: Duration,
     pub device_auth: Duration,

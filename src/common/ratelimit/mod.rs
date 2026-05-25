@@ -14,6 +14,7 @@ use crate::redis_pool::RedisPool;
 
 /// `RateLimitDecision` — direct port of the Java record.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct RateLimitDecision {
     pub allowed: bool,
     pub count: u64,

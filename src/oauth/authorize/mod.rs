@@ -6,6 +6,5 @@ pub mod flow;
 pub mod result;
 
 pub use claims::ClaimsRequest;
-pub use code::{AuthCodeStore, AuthorizationCode};
+pub use code::AuthCodeStore;
 pub use flow::AuthorizeFlow;
-pub use result::AuthorizeResult;

@@ -201,6 +201,7 @@ impl SessionSummary {
     /// it has. `from_session_only` matches the no-user case (returns
     /// `null`s for username/email — same shape Java emits when `s.user`
     /// is null).
+    #[allow(dead_code)]
     pub fn from_session_only(s: &UserSession) -> Self {
         Self {
             id: s.id.to_string(),

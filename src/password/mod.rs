@@ -6,6 +6,5 @@ pub mod model;
 pub mod repository;
 pub mod resource;
 
-pub use flow::{ChangeError, PasswordFlow, ResetError};
-pub use model::PasswordReset;
+pub use flow::PasswordFlow;
 pub use repository::PasswordResetRepository;

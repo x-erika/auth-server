@@ -149,6 +149,7 @@ impl CredentialRepository {
         Self { db }
     }
 
+    #[allow(dead_code)]
     pub async fn find_by_id(&self, id: Uuid) -> sqlx::Result<Option<Credential>> {
         sqlx::query_as::<_, Credential>("SELECT * FROM credentials WHERE id = $1")
             .bind(id)
@@ -156,6 +157,7 @@ impl CredentialRepository {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn find_by_user_id(&self, user_id: Uuid) -> sqlx::Result<Vec<Credential>> {
         sqlx::query_as::<_, Credential>("SELECT * FROM credentials WHERE user_id = $1")
             .bind(user_id)

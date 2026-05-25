@@ -29,7 +29,7 @@ impl PendingAuthorizationStore {
         let ttl_from_expires = (pending.expires_at - Utc::now().naive_utc()).num_seconds();
         let ttl = if ttl_from_expires > 0 {
             ttl_from_expires as u64
-        } else if pending.expires_at == chrono::NaiveDateTime::UNIX_EPOCH {
+        } else if pending.expires_at == chrono::DateTime::UNIX_EPOCH.naive_utc() {
             // expires_at unset → fall back to default
             self.default_ttl.as_secs()
         } else {

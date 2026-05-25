@@ -31,6 +31,10 @@ const REFRESH_TOKEN_TTL_DAYS: i64 = 30;
 pub struct TokenIssuer {
     jwt_signer: Arc<JwtSigner>,
     roles: RoleRepository,
+    // Mirrors Java's `@Inject RefreshTokenRepository` (TokenIssuer.java:28).
+    // Rust uses sqlx's explicit-tx pattern via `RefreshTokenRepository::persist_in_tx(tx, ...)`,
+    // so the field isn't accessed via `self.` — but kept for 1:1 parity with the Java DI shape.
+    #[allow(dead_code)]
     refresh_tokens: RefreshTokenRepository,
     hmac: HmacSha256,
 }

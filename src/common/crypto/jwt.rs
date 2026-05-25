@@ -42,6 +42,7 @@ impl JwtSigner {
         }
     }
 
+    #[allow(dead_code)]
     pub fn issuer(&self) -> &str {
         &self.issuer
     }
@@ -50,6 +51,7 @@ impl JwtSigner {
         self.access_ttl.as_secs()
     }
 
+    #[allow(dead_code)]
     pub fn id_token_ttl_seconds(&self) -> u64 {
         self.id_ttl.as_secs()
     }
@@ -170,6 +172,7 @@ impl JwtValidator {
     /// `expected_audience`. Use this from any caller that knows which client a
     /// token should be bound to (e.g. an OIDC client checking an id_token
     /// meant for itself).
+    #[allow(dead_code)]
     pub fn validate_with(&self, token: &str, expected_audience: Option<&str>) -> Option<Value> {
         self.validate_internal(token, expected_audience, false)
     }

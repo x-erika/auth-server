@@ -32,6 +32,7 @@ const ACTIVE_KID_FILE: &str = "active.kid";
 const RSA_BITS: usize = 2048;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct PublicKeyEntry {
     pub kid: String,
     pub public: RsaPublicKey,
@@ -39,6 +40,7 @@ pub struct PublicKeyEntry {
     pub decoding_key: DecodingKey,
 }
 
+#[allow(dead_code)]
 struct KeyPair {
     private: RsaPrivateKey,
     public: RsaPublicKey,

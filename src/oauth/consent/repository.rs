@@ -28,6 +28,7 @@ impl UserConsentRepository {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn find_by_id(&self, id: Uuid) -> sqlx::Result<Option<UserConsent>> {
         sqlx::query_as::<_, UserConsent>("SELECT * FROM user_consents WHERE id = $1")
             .bind(id)
@@ -81,6 +82,7 @@ impl UserConsentRepository {
         .map(|_| ())
     }
 
+    #[allow(dead_code)]
     pub async fn revoke(&self, user_id: Uuid, client_id: Uuid) -> sqlx::Result<u64> {
         let res = sqlx::query(
             "DELETE FROM user_consents WHERE user_id = $1 AND client_id = $2",

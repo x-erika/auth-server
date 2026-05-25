@@ -130,6 +130,7 @@ impl SessionRepository {
         Ok(Some(hydrated))
     }
 
+    #[allow(dead_code)]
     pub async fn find_all_active(&self) -> sqlx::Result<Vec<UserSession>> {
         sqlx::query_as::<_, UserSession>(
             r#"SELECT * FROM user_sessions
@@ -208,6 +209,7 @@ impl SessionRepository {
             .collect())
     }
 
+    #[allow(dead_code)]
     pub async fn find_active_by_user_id(
         &self,
         user_id: Uuid,

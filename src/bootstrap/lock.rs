@@ -21,6 +21,7 @@ pub async fn acquire(tx: &mut Transaction<'_, Postgres>) -> sqlx::Result<()> {
 
 /// Variant that takes a raw `PgConnection` — useful when the caller is
 /// already inside a `BEGIN` it owns elsewhere.
+#[allow(dead_code)]
 pub async fn acquire_on(conn: &mut PgConnection) -> sqlx::Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(LOCK_KEY)

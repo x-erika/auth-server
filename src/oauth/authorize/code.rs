@@ -2,7 +2,6 @@
 //! migration V9 dropped the `auth_codes` table.
 
 use chrono::{NaiveDateTime, Utc};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -91,7 +90,3 @@ impl AuthCodeStore {
     }
 }
 
-// Re-export so callers can write `code::AuthorizationCode` without pulling
-// `code::code` into scope.
-#[allow(dead_code)]
-pub use AuthorizationCode as Code;

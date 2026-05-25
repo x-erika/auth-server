@@ -8,5 +8,4 @@ pub mod repository;
 pub mod resource;
 
 pub use flow::SignupFlow;
-pub use model::EmailVerification;
 pub use repository::EmailVerificationRepository;

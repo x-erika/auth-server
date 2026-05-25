@@ -26,6 +26,7 @@ impl EmailVerificationRepository {
         .await
     }
 
+    #[allow(dead_code)]
     pub async fn persist(&self, v: &EmailVerification) -> sqlx::Result<()> {
         sqlx::query(
             r#"INSERT INTO email_verifications
@@ -43,6 +44,7 @@ impl EmailVerificationRepository {
         .map(|_| ())
     }
 
+    #[allow(dead_code)]
     pub async fn mark_consumed(&self, id: Uuid) -> sqlx::Result<()> {
         sqlx::query("UPDATE email_verifications SET consumed_at = NOW() WHERE id = $1")
             .bind(id)

@@ -84,6 +84,7 @@ impl ConsentService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn revoke(&self, user_id: Uuid, client_id: Uuid) -> sqlx::Result<u64> {
         self.repo.revoke(user_id, client_id).await
     }

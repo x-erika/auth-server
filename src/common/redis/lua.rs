@@ -35,6 +35,7 @@ pub static INCR_AND_EXPIRE: Lazy<Script> = Lazy::new(|| {
 
 /// `HGETALL key; DEL if non-empty; return hash`. Companion to GET_AND_DEL
 /// for hash-typed one-shot stores (currently only DeviceAuthorization).
+#[allow(dead_code)]
 pub static HGETALL_AND_DEL: Lazy<Script> = Lazy::new(|| {
     Script::new(
         "local v = redis.call('HGETALL', KEYS[1]) \
