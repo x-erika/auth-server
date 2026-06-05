@@ -1,0 +1,21 @@
+# Build output — recompiled inside the image
+target/
+
+# VCS + editor noise
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local secrets / runtime artefacts
+.env
+.env.local
+keys/
+
+# Docs that aren't needed at build time
+README.md
+*.md
