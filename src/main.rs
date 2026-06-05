@@ -83,6 +83,13 @@ async fn health_ready(state: web::Data<SharedState>) -> impl Responder {
     }
 }
 
+#[get("/favicon.png")]
+async fn favicon() -> impl Responder {
+    HttpResponse::Ok()
+        .content_type("image/png")
+        .body(&include_bytes!("../assets/favicon.png")[..])
+}
+
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     // tracing init — prefer RUST_LOG, fall back to info.
@@ -291,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
             .service(health)
             .service(health_live)
             .service(health_ready)
+            .service(favicon)
             .configure(login::resource::configure)
             .configure(login::page::configure)
             .configure(signup::resource::configure)
