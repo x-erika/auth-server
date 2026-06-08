@@ -34,6 +34,18 @@ impl ClientSecretHasher {
         a.len() == b.len() && bool::from(a.ct_eq(b))
     }
 
+    /// Async, executor-friendly [`verify`]. The hashed path (Argon2) is
+    /// offloaded to a bounded blocking thread; the cheap legacy-plaintext path
+    /// stays inline so it isn't gated behind the Argon2 concurrency limit.
+    pub async fn verify_async(presented: &str, stored: &str) -> bool {
+        if !Self::is_hashed(stored) {
+            return Self::verify(presented, stored);
+        }
+        let presented = presented.to_owned();
+        let stored = stored.to_owned();
+        argon2_hasher::run_bounded(move || Self::verify(&presented, &stored)).await
+    }
+
     pub fn is_hashed(stored: &str) -> bool {
         stored.starts_with('{') && stored.contains('|')
     }

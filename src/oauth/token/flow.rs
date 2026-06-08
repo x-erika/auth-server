@@ -110,7 +110,7 @@ impl TokenFlow {
                 "Unknown or disabled client",
             ));
         }
-        if !authenticate_client(&client, req.client_secret) {
+        if !authenticate_client(&client, req.client_secret).await {
             return Ok(TokenResult::error(
                 "invalid_client",
                 "Invalid client credentials",
@@ -223,7 +223,7 @@ impl TokenFlow {
                 "client_credentials grant requires a confidential client",
             ));
         }
-        if !authenticate_client(&client, req.client_secret) {
+        if !authenticate_client(&client, req.client_secret).await {
             return Ok(TokenResult::error(
                 "invalid_client",
                 "Invalid client credentials",
@@ -264,7 +264,7 @@ impl TokenFlow {
                 "Unknown or disabled client",
             ));
         }
-        if !authenticate_client(&client, req.client_secret) {
+        if !authenticate_client(&client, req.client_secret).await {
             return Ok(TokenResult::error(
                 "invalid_client",
                 "Invalid client credentials",
@@ -346,7 +346,7 @@ impl TokenFlow {
                 "Unknown or disabled client",
             ));
         }
-        if !authenticate_client(&client, req.client_secret) {
+        if !authenticate_client(&client, req.client_secret).await {
             return Ok(TokenResult::error(
                 "invalid_client",
                 "Invalid client credentials",
@@ -420,7 +420,7 @@ impl TokenFlow {
 /// Client auth. Public clients pass through; confidential require a
 /// matching `client_secret` (Argon2-verified, with legacy-plaintext fallback
 /// inside `ClientSecretHasher::verify`).
-fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool {
+async fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool {
     if client.client_type.as_deref().unwrap_or("").to_ascii_lowercase() != "confidential" {
         return true;
     }
@@ -433,5 +433,5 @@ fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool 
     let Some(stored) = client.client_secret.as_deref() else {
         return false;
     };
-    ClientSecretHasher::verify(presented, stored)
+    ClientSecretHasher::verify_async(presented, stored).await
 }

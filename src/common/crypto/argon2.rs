@@ -19,6 +19,8 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
+use once_cell::sync::Lazy;
+use tokio::sync::Semaphore;
 
 // OWASP 2024 Argon2id baseline (12 MiB memory, 3 iterations, p=1). Old
 // credentials remain verifiable because `verify_inner` reads each row's
@@ -69,6 +71,44 @@ pub fn hash(raw_password: &str) -> Hashed {
 
 pub fn verify(raw_password: &str, secret_data_json: &str, credential_data_json: &str) -> bool {
     verify_inner(raw_password, secret_data_json, credential_data_json).unwrap_or(false)
+}
+
+/// Caps how many Argon2 hashes run at once. Argon2 is CPU-bound (~25ms) and
+/// each one allocates `MEMORY_KB` (12 MiB); running it inline on the actix
+/// workers starves the async executor, and running it unbounded blows up RSS
+/// under load. Callers offload via [`run_bounded`]/[`verify_async`] and we cap
+/// in-flight work at the core count — throughput stays at the CPU ceiling
+/// while memory stays predictable. Override with `AUTH_ARGON2_MAX_CONCURRENCY`.
+static ARGON2_PERMITS: Lazy<Semaphore> = Lazy::new(|| {
+    let permits = std::env::var("AUTH_ARGON2_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .or_else(|| std::thread::available_parallelism().ok().map(|p| p.get()))
+        .unwrap_or(4);
+    Semaphore::new(permits)
+});
+
+/// Runs a blocking, Argon2-bearing closure off the async executor, bounded by
+/// [`ARGON2_PERMITS`]. Fails closed (`false`) if the task is cancelled/panics.
+pub async fn run_bounded<F>(f: F) -> bool
+where
+    F: FnOnce() -> bool + Send + 'static,
+{
+    let _permit = ARGON2_PERMITS.acquire().await.ok();
+    tokio::task::spawn_blocking(f).await.unwrap_or(false)
+}
+
+/// Async, executor-friendly [`verify`] — use this from request handlers.
+pub async fn verify_async(
+    raw_password: &str,
+    secret_data_json: &str,
+    credential_data_json: &str,
+) -> bool {
+    let raw = raw_password.to_owned();
+    let secret = secret_data_json.to_owned();
+    let credential = credential_data_json.to_owned();
+    run_bounded(move || verify(&raw, &secret, &credential)).await
 }
 
 fn verify_inner(raw: &str, secret_json: &str, credential_json: &str) -> Option<bool> {

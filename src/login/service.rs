@@ -75,7 +75,7 @@ impl LoginService {
             ),
         };
 
-        let ok = argon2_hasher::verify(raw_password, &secret_data, &credential_data);
+        let ok = argon2_hasher::verify_async(raw_password, &secret_data, &credential_data).await;
 
         let user = user.filter(|u| u.enabled && u.email_verified);
         if user.is_none() || credential.is_none() || !ok {

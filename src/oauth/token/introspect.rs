@@ -47,7 +47,7 @@ impl IntrospectFlow {
                 "Unknown or disabled client",
             ));
         }
-        if !authenticate_client(&client, client_secret) {
+        if !authenticate_client(&client, client_secret).await {
             return Ok(IntrospectResult::error(
                 "invalid_client",
                 "Invalid client credentials",
@@ -94,7 +94,7 @@ fn audience_matches(aud: Option<&Value>, expected: &str) -> bool {
     false
 }
 
-fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool {
+async fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool {
     if client.client_type.as_deref().unwrap_or("").to_ascii_lowercase() != "confidential" {
         return true;
     }
@@ -104,5 +104,5 @@ fn authenticate_client(client: &Client, presented_secret: Option<&str>) -> bool 
     let Some(stored) = client.client_secret.as_deref() else {
         return false;
     };
-    ClientSecretHasher::verify(presented, stored)
+    ClientSecretHasher::verify_async(presented, stored).await
 }
